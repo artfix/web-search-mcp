@@ -66,7 +66,7 @@ class BrowserUnavailableError(RuntimeError):
 # a bare `playwright install chromium` does not work on uvx installs.
 BROWSER_INSTALL_HINT = (
     "Install the browser with `uv run playwright install chromium` (source "
-    "checkout) or `uvx --from search-mcp playwright install chromium` "
+    "checkout) or `uvx --from free-search-mcp playwright install chromium` "
     "(uvx/PyPI install), then restart the server."
 )
 

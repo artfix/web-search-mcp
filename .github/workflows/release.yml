@@ -13,13 +13,10 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
-    # Publishes via PyPI Trusted Publishing (OIDC) — no token stored in the
-    # repo. One-time setup on pypi.org: add a "pending publisher" for the
-    # project name `search-mcp` with owner `sweetcornna`, repository
-    # `free-search-mcp`, workflow `release.yml`, environment `pypi`.
-    environment: pypi
-    permissions:
-      id-token: write
+    # Publishes `free-search-mcp` with the PYPI_API_TOKEN repo secret
+    # (Settings → Secrets and variables → Actions). Every `v*` tag push
+    # publishes automatically; the only maintenance ever needed is rotating
+    # the token on pypi.org and updating that one secret.
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -27,3 +24,5 @@ jobs:
         run: uv build
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

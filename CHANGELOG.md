@@ -4,10 +4,25 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 semantic versioning.
 
+## [0.4.1] - 2026-07-08
+
+First release actually on PyPI.
+
+### Changed
+
+- **Distribution renamed to `free-search-mcp`** — the name `search-mcp` turned
+  out to be taken on PyPI. The import package (`search_mcp`), all three
+  console scripts, and every env var (`SEARCH_MCP_*`) are unchanged; a new
+  `free-search-mcp` console alias makes the bare `uvx free-search-mcp` start
+  the server without `--from`.
+- Release workflow publishes with a repo-secret API token (`PYPI_API_TOKEN`)
+  instead of Trusted Publishing — pushing a `v*` tag is the entire release
+  process.
+
 ## [0.4.0] - 2026-07-08
 
 Keyless-search reliability + one-command deploy. Focus: no result should be
-silently lost, and `uvx search-mcp` should give any agent working search with
+silently lost, and `uvx free-search-mcp` should give any agent working search with
 zero setup.
 
 ### Added
@@ -37,7 +52,7 @@ zero setup.
   writes), no background tasks.
 
 **Deploy:**
-- **PyPI packaging + `uvx search-mcp`.** Full metadata (urls, classifiers,
+- **PyPI packaging + `uvx free-search-mcp`.** Full metadata (urls, classifiers,
   PEP 639 license), verified end-to-end: `claude mcp add search -- uvx
   search-mcp` gives an agent working keyless search with zero config.
 - **GitHub Actions.** `ci.yml` (ruff + offline pytest on Python
@@ -57,7 +72,7 @@ zero setup.
   hints now render in both the results and no-results branches.
 - **Missing Chromium degrades gracefully.** A never-downloaded browser now
   raises one actionable error carrying the exact install command
-  (`uvx --from search-mcp playwright install chromium`), memoized instead of
+  (`uvx --from free-search-mcp playwright install chromium`), memoized instead of
   re-starting the Playwright driver per attempt; engines record an honest
   `browser_unavailable` gate instead of stack traces. HTTP-only search and
   fetching keep working without Chromium.
