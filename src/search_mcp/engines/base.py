@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import abc
+import asyncio
+import random
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -8,7 +10,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from curl_cffi.requests import AsyncSession
-from curl_cffi.requests.exceptions import RequestException
+from curl_cffi.requests.exceptions import RequestException, Timeout
 from selectolax.parser import HTMLParser
 
 from ..browser import pool
@@ -550,6 +552,43 @@ def raise_for_key_error(engine: str, status: int | None) -> None:
         )
 
 
+# --- transient-failure retry -------------------------------------------------
+# ONE bounded retry for the keyless HTTP path. Deliberately narrow:
+#   * connection errors (reset/refused) — fast failures, worth a single retry
+#   * 429/5xx — transient server states; honor Retry-After up to a small cap
+#   * timeouts — NEVER retried: a request_timeout expiry means the engine is
+#     slow-dead and retrying doubles the whole search's latency envelope
+# Happy path pays zero extra cost; a failing engine adds at most ~3s inside
+# the aggregator's parallel gather.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RETRY_AFTER_CAP = 3.0
+_MAX_ATTEMPTS = 2
+
+
+def _is_retryable_status(status: int) -> bool:
+    return status in _RETRYABLE_STATUSES
+
+
+def _retry_after_seconds(headers: Any) -> float | None:
+    """Parse a ``Retry-After`` header's delta-seconds form.
+
+    The HTTP-date form is deliberately unsupported — with a 3s cap it could
+    only ever clamp to the cap anyway. Returns ``None`` when the header is
+    absent, negative, or unparseable.
+    """
+    try:
+        raw = headers.get("Retry-After") if headers else None
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        val = float(str(raw).strip())
+    except ValueError:
+        return None
+    return val if val >= 0 else None
+
+
 def detect_gate(html: str) -> str | None:
     """Best-effort: classify a page as a gate (``"captcha"``/``"consent"``/
     ``"login"``) when it carries a known wall marker, else ``None``.
@@ -644,28 +683,53 @@ class Engine(abc.ABC):
         if self.needs_browser or settings.fetch_strategy == "browser":
             _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
             return html
-        # curl_cffi sets the User-Agent matching the impersonated browser, so
-        # we deliberately do NOT pass our own UA here — sending a mismatched UA
-        # would re-introduce the very fingerprint discrepancy DDG checks for.
         try:
-            async with AsyncSession(
-                impersonate=_IMPERSONATE,
-                timeout=settings.request_timeout,
-                allow_redirects=True,
-                headers={
-                    "Accept-Language": settings.accept_language,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                **curl_proxy_kwargs(self.name),
-            ) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.text
+            return await self._http_get(url)
         except RequestException:
             if settings.fetch_strategy == "http":
                 raise
             _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
             return html
+
+    async def _http_get(self, url: str) -> str:
+        """One HTTP GET with at most one retry for transient failures.
+
+        Retry policy lives in the module-level ``_RETRYABLE_STATUSES`` /
+        ``_retry_after_seconds`` helpers; timeouts are never retried. The
+        session is reused across attempts so a retry doesn't re-pay the TLS
+        handshake.
+        """
+        # curl_cffi sets the User-Agent matching the impersonated browser, so
+        # we deliberately do NOT pass our own UA here — sending a mismatched UA
+        # would re-introduce the very fingerprint discrepancy DDG checks for.
+        async with AsyncSession(
+            impersonate=_IMPERSONATE,
+            timeout=settings.request_timeout,
+            allow_redirects=True,
+            headers={
+                "Accept-Language": settings.accept_language,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            **curl_proxy_kwargs(self.name),
+        ) as client:
+            for attempt in range(_MAX_ATTEMPTS):
+                last = attempt + 1 >= _MAX_ATTEMPTS
+                try:
+                    resp = await client.get(url)
+                except Timeout:
+                    raise  # slow-dead engine: retrying doubles search latency
+                except RequestException:
+                    if last:
+                        raise
+                    await asyncio.sleep(random.uniform(0.4, 0.8))
+                    continue
+                if not last and _is_retryable_status(resp.status_code):
+                    delay = _retry_after_seconds(resp.headers)
+                    await asyncio.sleep(min(delay if delay is not None else 0.6, _RETRY_AFTER_CAP))
+                    continue
+                resp.raise_for_status()
+                return resp.text
+        raise RequestException(f"{self.name}: retries exhausted for {url}")  # unreachable
 
 
 def text_of(node) -> str:
