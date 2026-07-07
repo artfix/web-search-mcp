@@ -15,15 +15,7 @@ import httpx
 from selectolax.parser import HTMLParser
 from w3lib.html import get_base_url
 
-from .config import settings
-from .net import proxy_url
-from .fetcher import (
-    _accumulate_capped,
-    _check_content_length,
-    _decode_body,
-    _resolve_redirect_location,
-    _MAX_REDIRECTS,
-)
+from .httpfetch import _decode_body, httpx_client_kwargs, httpx_stream_capped
 from .url_safety import assert_url_allowed_async
 
 
@@ -61,42 +53,17 @@ async def extract_structured(url: str) -> dict[str, Any]:
     `meta_fallback` dict of bare ``<meta>`` tags (if any) and a `hint`
     explaining why the page produced no structured data.
     """
-    # SSRF guard: validate the caller URL before opening a socket.
+    # SSRF guard: validate the caller URL before opening a socket. The client
+    # is constructed HERE (tests monkeypatch httpx.AsyncClient); the shared
+    # redirect/caps loop lives in httpfetch.
     await assert_url_allowed_async(url)
-    status = 200
-    async with httpx.AsyncClient(
-        timeout=settings.fetch_timeout,
-        # Automatic redirects DISABLED; we follow Location by hand and re-check
-        # each hop with assert_url_allowed so a 30x can't reach an internal IP.
-        follow_redirects=False,
-        headers={"User-Agent": settings.user_agent},
-        proxy=proxy_url(),
-    ) as client:
-        current = url
-        body = b""
-        content_type = ""
-        for _ in range(_MAX_REDIRECTS + 1):
-            async with client.stream("GET", current) as resp:
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    nxt = _resolve_redirect_location(
-                        current, resp.headers.get("location")
-                    )
-                    if not nxt:
-                        raise RuntimeError(f"redirect with no Location from {current}")
-                    await assert_url_allowed_async(nxt)
-                    current = nxt
-                    continue
-                # DO NOT raise on non-2xx: a 403/503 bot-block still ships an
-                # HTML shell we want to run through the meta_fallback/hint path.
-                # Only genuine transport errors (httpx.* exceptions from
-                # client.stream) propagate. Caps still apply to the shell body.
-                status = resp.status_code
-                _check_content_length(resp.headers)
-                body = await _accumulate_capped(resp.aiter_bytes())
-                content_type = resp.headers.get("content-type", "")
-                break
-        else:
-            raise RuntimeError(f"too many redirects (>{_MAX_REDIRECTS}) fetching {url}")
+    async with httpx.AsyncClient(**httpx_client_kwargs()) as client:
+        # raise_for_status=False: a 403/503 bot-block still ships an HTML
+        # shell we want to run through the meta_fallback/hint path. Only
+        # genuine transport errors propagate. Caps still apply to the shell.
+        status, content_type, body = await httpx_stream_capped(
+            client, url, raise_for_status=False
+        )
 
     # Honor the declared/sniffed charset (shared with fetcher) so non-UTF-8 pages
     # don't turn schema.org metadata into mojibake.

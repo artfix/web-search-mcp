@@ -13,13 +13,7 @@ from markdownify import markdownify as html_to_md
 from pypdf import PdfReader
 
 from .config import settings
-from .net import proxy_url
-from .fetcher import (
-    _accumulate_capped,
-    _check_content_length,
-    _resolve_redirect_location,
-    _MAX_REDIRECTS,
-)
+from .httpfetch import httpx_client_kwargs, httpx_stream_capped
 from .formatting import estimate_tokens, smart_truncate
 from .url_safety import assert_url_allowed_async
 
@@ -161,34 +155,16 @@ def _parse_text(blob: bytes) -> str:
 
 
 async def _read_remote(url: str) -> tuple[bytes, str | None]:
-    # SSRF guard: validate the caller URL before opening a socket.
+    """SSRF-guarded download of a remote document body.
+
+    The redirect/caps loop lives in httpfetch.httpx_stream_capped; the client
+    is constructed HERE (after the guard, before any socket) so tests can keep
+    monkeypatching ``httpx.AsyncClient``.
+    """
     await assert_url_allowed_async(url)
-    async with httpx.AsyncClient(
-        timeout=settings.fetch_timeout,
-        # Automatic redirects DISABLED so a 30x cannot jump to an internal IP
-        # behind the SSRF guard's back. We follow Location by hand, re-checking
-        # each hop with assert_url_allowed.
-        follow_redirects=False,
-        headers={"User-Agent": settings.user_agent},
-        proxy=proxy_url(),
-    ) as client:
-        current = url
-        for _ in range(_MAX_REDIRECTS + 1):
-            async with client.stream("GET", current) as resp:
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    nxt = _resolve_redirect_location(
-                        current, resp.headers.get("location")
-                    )
-                    if not nxt:
-                        raise RuntimeError(f"redirect with no Location from {current}")
-                    await assert_url_allowed_async(nxt)
-                    current = nxt
-                    continue
-                resp.raise_for_status()
-                _check_content_length(resp.headers)
-                body = await _accumulate_capped(resp.aiter_bytes())
-                return body, resp.headers.get("content-type")
-        raise RuntimeError(f"too many redirects (>{_MAX_REDIRECTS}) fetching {url}")
+    async with httpx.AsyncClient(**httpx_client_kwargs()) as client:
+        _, ctype, body = await httpx_stream_capped(client, url, raise_for_status=True)
+        return body, ctype or None
 
 
 def _slice(full: str, start: int, length: int | None) -> tuple[str, bool, int, int]:
