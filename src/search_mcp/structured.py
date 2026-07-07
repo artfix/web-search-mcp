@@ -24,7 +24,7 @@ from .fetcher import (
     _resolve_redirect_location,
     _MAX_REDIRECTS,
 )
-from .url_safety import assert_url_allowed
+from .url_safety import assert_url_allowed_async
 
 
 _SYNTAXES = ["json-ld", "microdata", "opengraph", "rdfa", "microformat"]
@@ -62,7 +62,7 @@ async def extract_structured(url: str) -> dict[str, Any]:
     explaining why the page produced no structured data.
     """
     # SSRF guard: validate the caller URL before opening a socket.
-    assert_url_allowed(url)
+    await assert_url_allowed_async(url)
     status = 200
     async with httpx.AsyncClient(
         timeout=settings.fetch_timeout,
@@ -83,7 +83,7 @@ async def extract_structured(url: str) -> dict[str, Any]:
                     )
                     if not nxt:
                         raise RuntimeError(f"redirect with no Location from {current}")
-                    assert_url_allowed(nxt)
+                    await assert_url_allowed_async(nxt)
                     current = nxt
                     continue
                 # DO NOT raise on non-2xx: a 403/503 bot-block still ships an

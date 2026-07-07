@@ -20,13 +20,19 @@ all raise :class:`UnsafeURLError` rather than silently allowing the fetch.
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from urllib.parse import urlsplit
 
 from . import config
 
-__all__ = ["UnsafeURLError", "assert_url_allowed", "assert_ip_allowed"]
+__all__ = [
+    "UnsafeURLError",
+    "assert_url_allowed",
+    "assert_url_allowed_async",
+    "assert_ip_allowed",
+]
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
@@ -87,13 +93,12 @@ def assert_ip_allowed(ip: str) -> None:
     _check_ip_str(ip)
 
 
-def assert_url_allowed(url: str) -> str:
-    """Validate ``url`` against the SSRF guard, returning it unchanged on success.
+def _precheck(url: str) -> tuple[str, int | None] | None:
+    """Shared scheme/host/port/literal validation for both guard variants.
 
-    Rejects non-http(s) schemes (file://, ftp://, gopher://, data:, ...) and any
-    URL whose hostname resolves — via :func:`socket.getaddrinfo` — to *any*
-    loopback/link-local/private/reserved address. Bare-IP literal hosts are
-    checked directly. DNS-resolution failures raise :class:`UnsafeURLError`.
+    Returns ``(host, port)`` when a DNS resolution is still required, or
+    ``None`` when the URL is already fully validated (private-hosts escape
+    hatch engaged, or the host was an IP literal checked directly).
     """
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
@@ -119,7 +124,7 @@ def assert_url_allowed(url: str) -> str:
     if _private_hosts_allowed():
         # Escape hatch fully engaged: skip the (network-touching) DNS resolution
         # entirely so private/local fetches work without leaking lookups.
-        return url
+        return None
 
     # If the host is a bare IP literal, check it directly without DNS.
     try:
@@ -128,16 +133,13 @@ def assert_url_allowed(url: str) -> str:
         literal = None
     if literal is not None:
         _check_ip_str(str(literal))
-        return url
+        return None
 
-    # Resolve to ALL A/AAAA addresses; block if ANY is unsafe.
-    try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        raise UnsafeURLError(
-            f"Could not resolve host {host!r}: {exc}. Refusing to connect."
-        ) from exc
+    return host, port
 
+
+def _check_resolved(host: str, infos) -> None:
+    """Validate every address ``getaddrinfo`` returned; block if ANY is unsafe."""
     addresses = {info[4][0] for info in infos}
     if not addresses:
         raise UnsafeURLError(
@@ -147,4 +149,47 @@ def assert_url_allowed(url: str) -> str:
         # getaddrinfo may append a scope id to link-local v6 (e.g. 'fe80::1%en0').
         _check_ip_str(addr.split("%", 1)[0])
 
+
+def assert_url_allowed(url: str) -> str:
+    """Validate ``url`` against the SSRF guard, returning it unchanged on success.
+
+    Rejects non-http(s) schemes (file://, ftp://, gopher://, data:, ...) and any
+    URL whose hostname resolves — via :func:`socket.getaddrinfo` — to *any*
+    loopback/link-local/private/reserved address. Bare-IP literal hosts are
+    checked directly. DNS-resolution failures raise :class:`UnsafeURLError`.
+
+    This variant BLOCKS on DNS; async callers must use
+    :func:`assert_url_allowed_async` so a slow lookup never stalls the event
+    loop.
+    """
+    pending = _precheck(url)
+    if pending is None:
+        return url
+    host, port = pending
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeURLError(
+            f"Could not resolve host {host!r}: {exc}. Refusing to connect."
+        ) from exc
+    _check_resolved(host, infos)
+    return url
+
+
+async def assert_url_allowed_async(url: str) -> str:
+    """Same guard as :func:`assert_url_allowed`, resolving DNS through the
+    event loop's executor (``loop.getaddrinfo``) so concurrent fetches keep
+    running during a slow lookup."""
+    pending = _precheck(url)
+    if pending is None:
+        return url
+    host, port = pending
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeURLError(
+            f"Could not resolve host {host!r}: {exc}. Refusing to connect."
+        ) from exc
+    _check_resolved(host, infos)
     return url

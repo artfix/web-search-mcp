@@ -20,7 +20,7 @@ from .formatting import estimate_tokens, smart_truncate
 from .gnews import is_google_news_url, resolve_google_news_url
 from .net import curl_proxy_kwargs
 from .ratelimit import RateLimiter
-from .url_safety import assert_url_allowed
+from .url_safety import assert_url_allowed_async
 
 log = logging.getLogger(__name__)
 fetch_limiter = RateLimiter(settings.fetch_rate_limit_per_minute)
@@ -307,7 +307,7 @@ def _decode_body(body: bytes, ctype: str) -> str:
 
 async def _http_fetch(url: str) -> tuple[str, str]:
     # SSRF guard: validate the caller URL before we ever open a socket.
-    assert_url_allowed(url)
+    await assert_url_allowed_async(url)
     # No explicit User-Agent: curl_cffi sets one matching the impersonated
     # Chrome build, keeping the UA <-> JA3/H2 fingerprints consistent.
     async with AsyncSession(
@@ -332,7 +332,7 @@ async def _http_fetch(url: str) -> tuple[str, str]:
                 nxt = _resolve_redirect_location(current, resp.headers.get("location"))
                 if not nxt:
                     raise RuntimeError(f"redirect with no Location from {current}")
-                assert_url_allowed(nxt)  # re-validate EACH hop before following
+                await assert_url_allowed_async(nxt)  # re-validate EACH hop before following
                 current = nxt
                 continue
             # Terminal response: enforce caps, then stream the body.

@@ -21,7 +21,7 @@ from .fetcher import (
     _MAX_REDIRECTS,
 )
 from .formatting import estimate_tokens, smart_truncate
-from .url_safety import assert_url_allowed
+from .url_safety import assert_url_allowed_async
 
 log = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ def _parse_text(blob: bytes) -> str:
 
 async def _read_remote(url: str) -> tuple[bytes, str | None]:
     # SSRF guard: validate the caller URL before opening a socket.
-    assert_url_allowed(url)
+    await assert_url_allowed_async(url)
     async with httpx.AsyncClient(
         timeout=settings.fetch_timeout,
         # Automatic redirects DISABLED so a 30x cannot jump to an internal IP
@@ -181,7 +181,7 @@ async def _read_remote(url: str) -> tuple[bytes, str | None]:
                     )
                     if not nxt:
                         raise RuntimeError(f"redirect with no Location from {current}")
-                    assert_url_allowed(nxt)
+                    await assert_url_allowed_async(nxt)
                     current = nxt
                     continue
                 resp.raise_for_status()
