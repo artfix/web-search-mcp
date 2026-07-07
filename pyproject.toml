@@ -22,9 +22,11 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.5",
     "anyio>=4.4",
-    "tenacity>=9.0",
     "rapidfuzz>=3.10",
     "extruct>=0.18",
+    # Imported directly (structured.py: w3lib.html.get_base_url), not just a
+    # transitive dep of extruct — declare it so a future extruct can't break us.
+    "w3lib>=2.0",
 ]
 
 [project.scripts]
