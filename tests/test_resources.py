@@ -13,7 +13,7 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-def isolated_cache(tmp_path, monkeypatch):
+async def isolated_cache(tmp_path, monkeypatch):
     """Force the singleton cache to use a tmp sqlite file for this test."""
     from search_mcp import cache as cache_mod
 
@@ -23,7 +23,10 @@ def isolated_cache(tmp_path, monkeypatch):
     # The server module imported `cache` at module load — patch there too.
     from search_mcp import server as server_mod
     monkeypatch.setattr(server_mod, "cache", fresh)
-    return fresh
+    yield fresh
+    # Awaits/cancels the fire-and-forget maintenance task so it never
+    # outlives this test's event loop.
+    await fresh.close()
 
 
 async def test_resource_template_registered():

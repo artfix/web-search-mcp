@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -18,16 +17,21 @@ from .cache import cache
 from .config import settings
 from .formatting import estimate_tokens, smart_truncate
 from .gnews import is_google_news_url, resolve_google_news_url
-from .net import curl_proxy_kwargs
+# Shared GET plumbing lives in httpfetch. The first three names are
+# re-exported for the tests that exercise them through this module
+# (fetch_safety, charset); everything else imports from httpfetch directly.
+from .httpfetch import (  # noqa: F401
+    MaxBytesExceededError,
+    _accumulate_capped,
+    _decode_body,
+    curl_session_kwargs,
+    curl_stream_capped,
+)
 from .ratelimit import RateLimiter
-from .url_safety import assert_url_allowed
+from .url_safety import assert_url_allowed_async
 
 log = logging.getLogger(__name__)
 fetch_limiter = RateLimiter(settings.fetch_rate_limit_per_minute)
-
-# Match the engine fast-path: real Chrome JA3/JA4 + H2 fingerprint so target
-# sites don't see "headless client claiming to be Chrome".
-_IMPERSONATE = "chrome131"
 
 
 # Tags that contribute no content to a reader-mode view (fallback path).
@@ -201,151 +205,16 @@ def _truncate(text: str) -> tuple[str, bool]:
     return smart_truncate(text, settings.max_content_chars)
 
 
-# Cap on manually-followed redirect hops. We disable the HTTP client's
-# automatic redirect handling (which would chase a 30x straight to an
-# internal IP, bypassing the SSRF guard) and follow Location headers by hand,
-# re-validating each hop with assert_url_allowed before connecting.
-_MAX_REDIRECTS = 5
-
-
-class MaxBytesExceededError(RuntimeError):
-    """Raised when a response body grows past settings.max_response_bytes."""
-
-
-def _check_content_length(headers: Any) -> None:
-    """Reject up front if the declared Content-Length exceeds the cap.
-
-    Shared by all three remote-GET helpers (fetcher._http_fetch,
-    documents._read_remote, structured.extract_structured). A streaming guard
-    (_accumulate_capped) still backstops servers that lie or omit the header.
-    """
-    raw = headers.get("content-length") or headers.get("Content-Length")
-    if not raw:
-        return
-    try:
-        declared = int(raw)
-    except (TypeError, ValueError):
-        return
-    cap = settings.max_response_bytes
-    if declared > cap:
-        raise MaxBytesExceededError(
-            f"Response Content-Length {declared} exceeds cap {cap} bytes; refusing to download."
-        )
-
-
-async def _accumulate_capped(aiter: Any) -> bytes:
-    """Buffer an async byte-chunk iterator, aborting once it passes the cap.
-
-    The cap is settings.max_response_bytes. Shared across the three remote
-    helpers so an oversized (or Content-Length-lying) body never fully buffers
-    into memory.
-    """
-    cap = settings.max_response_bytes
-    buf = bytearray()
-    async for chunk in aiter:
-        if not chunk:
-            continue
-        buf.extend(chunk)
-        if len(buf) > cap:
-            raise MaxBytesExceededError(
-                f"Response body exceeded cap {cap} bytes while streaming; aborted."
-            )
-    return bytes(buf)
-
-
-def _resolve_redirect_location(base_url: str, location: str | None) -> str | None:
-    """Resolve a (possibly relative) Location against base_url. None if absent."""
-    if not location:
-        return None
-    from urllib.parse import urljoin
-
-    return urljoin(base_url, location)
-
-
-# Charset detection for the HTTP text path. We can't blindly decode as UTF-8:
-# many CJK pages (baidu/zhihu hits served as GBK/GB2312/Big5, Japanese pages as
-# Shift-JIS/EUC-JP) declare their charset in the Content-Type header or an HTML
-# <meta> tag, and decoding those as UTF-8 yields mojibake the LLM can't read.
-_CTYPE_CHARSET_RE = re.compile(r"charset\s*=\s*[\"']?([\w\-]+)", re.I)
-_META_CHARSET_RE = re.compile(
-    rb"""<meta[^>]+charset\s*=\s*["']?\s*([a-zA-Z0-9_\-]+)""", re.I
-)
-
-
-def _charset_from_ctype(ctype: str) -> str | None:
-    m = _CTYPE_CHARSET_RE.search(ctype or "")
-    return m.group(1).lower() if m else None
-
-
-def _sniff_meta_charset(body: bytes) -> str | None:
-    """Best-effort: read the charset from an HTML <meta> tag in the head."""
-    m = _META_CHARSET_RE.search(body[:4096])
-    if not m:
-        return None
-    try:
-        return m.group(1).decode("ascii").lower()
-    except (UnicodeDecodeError, AttributeError):
-        return None
-
-
-def _decode_body(body: bytes, ctype: str) -> str:
-    """Decode a response body using the declared/sniffed charset, not blind UTF-8.
-
-    Precedence: Content-Type header charset > HTML <meta> charset > UTF-8.
-    Unknown/invalid codecs fall back to UTF-8 so we never raise on decode.
-    """
-    enc = _charset_from_ctype(ctype)
-    if not enc and (not ctype or "html" in ctype or "xml" in ctype):
-        enc = _sniff_meta_charset(body)
-    enc = enc or "utf-8"
-    try:
-        return body.decode(enc, errors="replace")
-    except LookupError:
-        # An unrecognised charset label (e.g. a typo'd or exotic codec name).
-        return body.decode("utf-8", errors="replace")
-
-
 async def _http_fetch(url: str) -> tuple[str, str]:
-    # SSRF guard: validate the caller URL before we ever open a socket.
-    assert_url_allowed(url)
-    # No explicit User-Agent: curl_cffi sets one matching the impersonated
-    # Chrome build, keeping the UA <-> JA3/H2 fingerprints consistent.
-    async with AsyncSession(
-        impersonate=_IMPERSONATE,
-        timeout=settings.fetch_timeout,
-        # Automatic redirects are DISABLED: a 30x could otherwise jump straight
-        # to an internal IP, bypassing the per-hop SSRF check below.
-        allow_redirects=False,
-        headers={
-            "Accept-Language": settings.accept_language,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        **curl_proxy_kwargs(),
-    ) as client:
-        current = url
-        for _ in range(_MAX_REDIRECTS + 1):
-            resp = await client.get(current, stream=True)
-            status = resp.status_code
-            if status in (301, 302, 303, 307, 308):
-                # Drain/close the redirect response without buffering its body.
-                await resp.aclose()
-                nxt = _resolve_redirect_location(current, resp.headers.get("location"))
-                if not nxt:
-                    raise RuntimeError(f"redirect with no Location from {current}")
-                assert_url_allowed(nxt)  # re-validate EACH hop before following
-                current = nxt
-                continue
-            # Terminal response: enforce caps, then stream the body.
-            resp.raise_for_status()
-            _check_content_length(resp.headers)
-            try:
-                body = await _accumulate_capped(resp.aiter_content())
-            finally:
-                await resp.aclose()
-            ctype = resp.headers.get("content-type", "")
-            text = _decode_body(body, ctype)
-            return ctype, text
-        raise RuntimeError(f"too many redirects (>{_MAX_REDIRECTS}) fetching {url}")
+    """SSRF-guarded GET returning ``(content_type, decoded_text)``.
+
+    The redirect/caps/charset loop lives in httpfetch.curl_stream_capped; the
+    session is constructed HERE (after the guard, before any socket) so tests
+    can keep monkeypatching ``fetcher.AsyncSession``.
+    """
+    await assert_url_allowed_async(url)
+    async with AsyncSession(**curl_session_kwargs()) as client:
+        return await curl_stream_capped(client, url)
 
 
 _DOC_URL_SUFFIXES = (".pdf", ".docx")

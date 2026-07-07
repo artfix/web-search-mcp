@@ -452,7 +452,15 @@ run uv sync
 
 if [ "$SKIP_BROWSER" -eq 0 ]; then
   echo "Installing the Chromium browser for Playwright..."
-  run uv run playwright install chromium
+  if [ "$(uname -s)" = "Linux" ]; then
+    # On Linux the browser binary is useless without its shared-library OS
+    # deps; --with-deps installs them (may prompt for sudo/apt). Fall back to
+    # the plain install if that fails so the keyless HTTP engines still work.
+    echo "(Linux: installing browser OS dependencies too — may ask for sudo)"
+    run uv run playwright install --with-deps chromium || run uv run playwright install chromium
+  else
+    run uv run playwright install chromium
+  fi
   [ "$DRY_RUN" -eq 1 ] || ok "chromium installed"
 else
   warn "skipping Chromium install"

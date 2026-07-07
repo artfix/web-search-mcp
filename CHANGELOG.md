@@ -4,6 +4,85 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 semantic versioning.
 
+## [0.4.0] - 2026-07-08
+
+Keyless-search reliability + one-command deploy. Focus: no result should be
+silently lost, and `uvx search-mcp` should give any agent working search with
+zero setup.
+
+### Added
+
+**Keyless search reliability:**
+- **Aggregation-level rescue.** When a fresh search comes back empty — or
+  nearly empty with demonstrably unhealthy engines (errors, CAPTCHA gates, or
+  a silent zero) — the aggregator runs one bounded recovery pass via
+  `SEARCH_MCP_RESCUE_ENGINES` (default `searx` → `bing`, capped at
+  `SEARCH_MCP_RESCUE_TIMEOUT`, default 10s). Rescue results merge via RRF
+  with honest attribution and surface as `rescued_via`. A healthy sparse
+  result never triggers it, so the normal path pays nothing. This uniformly
+  protects a gated DuckDuckGo (previously unprotected) and replaces the
+  per-engine searx fallbacks inside `google`/`bing`.
+- **Bounded retry on the keyless HTTP path.** One retry for connection errors
+  (0.4–0.8s jittered) and 429/5xx (honoring `Retry-After` up to 3s); timeouts
+  are never retried. Happy path unchanged.
+- **Silent-block visibility.** An engine returning 0 results with no error
+  and no detected gate (the Mojeek-IP-block failure mode) now surfaces as
+  `empty_engines` + an actionable hint when results are sparse.
+- **`bing` joins the default pool** (`duckduckgo`, `mojeek`, `googlenews`,
+  `bing`) — its www4 edge answers over plain HTTP in ~0.3s, and with the
+  per-engine searx race gone a gated bing costs one fast attempt.
+- **Cache eviction.** Expired rows are now actually deleted, and the cache
+  file is capped at `SEARCH_MCP_CACHE_MAX_MB` (default 512, 0 disables) by
+  dropping the oldest pages + one VACUUM — opportunistic (init + every 200
+  writes), no background tasks.
+
+**Deploy:**
+- **PyPI packaging + `uvx search-mcp`.** Full metadata (urls, classifiers,
+  PEP 639 license), verified end-to-end: `claude mcp add search -- uvx
+  search-mcp` gives an agent working keyless search with zero config.
+- **GitHub Actions.** `ci.yml` (ruff + offline pytest on Python
+  3.11/3.12/3.13) and `release.yml` (tag-triggered build + PyPI publish via
+  Trusted Publishing/OIDC — no token stored in the repo).
+- **Config-dir `.env`.** Settings also load from `~/.config/search-mcp/.env`
+  so uvx installs launched from any directory stay configurable. Precedence:
+  real env > `./.env` > config-dir `.env`.
+- **Admin UI opens the browser automatically** (`SEARCH_MCP_ADMIN_NO_BROWSER=1`
+  to suppress).
+
+### Fixed
+
+- **Gate diagnostics finally render.** `gated_engines`/`gated_hint` were
+  attached to the payload but never rendered in markdown mode (the default),
+  so callers never saw WHY an engine returned nothing. Gate/silent/rescue
+  hints now render in both the results and no-results branches.
+- **Missing Chromium degrades gracefully.** A never-downloaded browser now
+  raises one actionable error carrying the exact install command
+  (`uvx --from search-mcp playwright install chromium`), memoized instead of
+  re-starting the Playwright driver per attempt; engines record an honest
+  `browser_unavailable` gate instead of stack traces. HTTP-only search and
+  fetching keep working without Chromium.
+- **SSRF DNS lookups no longer block the event loop.** The guard resolves via
+  `loop.getaddrinfo` on all async paths (initial URL + every redirect hop).
+- **`install.sh` installs Chromium's OS deps on Linux** (`--with-deps`, with
+  a plain-install fallback) — browser-rendered engines no longer crash on a
+  clean Linux host.
+
+### Changed
+
+- The triplicated redirect-following GET loop (fetcher/documents/structured)
+  is consolidated into `httpfetch.py` — one SSRF-checked, size-capped loop
+  with curl_cffi and httpx flavors.
+- Dependencies: dropped unused `tenacity`; declared direct `w3lib`.
+- README hero GIF is now committed and referenced by absolute URL (renders on
+  PyPI and fresh clones).
+
+### Known debt
+
+- `documents._source_chars_consumed` mirrors `formatting.smart_truncate`
+  boundary logic (fragile coupling; behavior-neutral refactor pending).
+- Page metadata rides in the cache `title` column behind a sentinel rather
+  than a schema change (deliberate, back-compat).
+
 ## [0.3.0] - 2026-06-16
 
 No-API-key usability audit + fixes. Focus: the default keyless path

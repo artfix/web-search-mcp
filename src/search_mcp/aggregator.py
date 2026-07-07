@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
+from .browser import BROWSER_INSTALL_HINT
 from .cache import cache
 from .config import settings
 from .engines import ENGINES, SearchFilters, SearchResult, get_engine
@@ -216,21 +217,122 @@ def _filter_hint(drops: dict[str, int], raw_total: int, kept_total: int) -> str:
 
 
 def _gate_hint(gated: dict[str, str], fallback: dict[str, str]) -> str:
-    """One-line explanation of which engines were gated (CAPTCHA/consent/login)
-    and how each was handled (searx fallback, or nothing)."""
+    """One-line explanation of which engines were gated (CAPTCHA/consent/login,
+    or a missing browser) and how each was handled (rescue, or nothing).
+
+    Remedies are per-cause: proxy advice only when a real gate (a remote wall)
+    was hit; the canonical install hint only when a browser was missing —
+    telling someone to configure a proxy for a missing binary is noise.
+    """
     parts: list[str] = []
+    browser_missing = False
+    real_gates = False
     for name in sorted(set(gated) | set(fallback)):
         reason = gated.get(name, "gated")
         via = fallback.get(name)
-        if via:
-            parts.append(f"{name} was {reason}-gated → served via {via}")
+        if reason == "browser_unavailable":
+            browser_missing = True
+            desc = f"{name} needed a browser render that is unavailable"
         else:
-            parts.append(f"{name} was {reason}-gated (no results)")
-    return (
-        "; ".join(parts)
-        + ". Configure a proxy (admin UI / SEARCH_MCP_PROXY) to route through a "
-        "non-blocked IP, or rely on the keyless default engines."
+            real_gates = True
+            desc = f"{name} was {reason}-gated"
+        if via:
+            desc += f" → served via {via}"
+        elif reason != "browser_unavailable":
+            desc += " (no results)"
+        parts.append(desc)
+    hint = "; ".join(parts) + "."
+    if real_gates:
+        hint += (
+            " Configure a proxy (admin UI / SEARCH_MCP_PROXY) to route through "
+            "a non-blocked IP, or rely on the keyless default engines."
+        )
+    if browser_missing:
+        hint += " " + BROWSER_INSTALL_HINT
+    return hint
+
+
+def _needs_rescue(
+    merged: list[dict[str, Any]], errors: dict[str, str], diagnostics: dict[str, Any]
+) -> bool:
+    """Decide whether the keyless rescue pass should run.
+
+    Triggers only when the run is empty, or sparse (<=3 — the SAME threshold
+    the empty-engine and filter hints use, so a run is never simultaneously
+    "sparse enough to warn about" and "too healthy to rescue") AND
+    demonstrably unhealthy: an engine errored, hit a gate, or silently
+    returned zero. A healthy niche query that legitimately yields a few
+    results must NOT trigger network work — the normal-path latency guarantee.
+    """
+    if not settings.rescue_enabled:
+        return False
+    if len(merged) == 0:
+        return True
+    if len(merged) > 3:
+        return False
+    raw = diagnostics.get("raw_per_engine", {})
+    return bool(errors) or bool(diagnostics.get("gated")) or any(
+        count == 0 for count in raw.values()
     )
+
+
+async def _rescue(
+    query: str,
+    n: int,
+    filters: SearchFilters,
+    engine_names: list[str],
+    diagnostics: dict[str, Any],
+) -> tuple[list[SearchResult], str | None]:
+    """One bounded keyless recovery pass via ``settings.rescue_engines``.
+
+    Sequential, first engine that yields results wins. Each candidate gets an
+    equal slice of ``settings.rescue_timeout`` (rate-limiter wait included),
+    so a slow first candidate (searx races public instances) can never starve
+    a fast later one. Calls the engines directly — never re-enters
+    ``aggregate_search`` — and the candidate list excludes engines the caller
+    already ran, so there is no recursion and no self-rescue.
+
+    Each candidate runs with a PRIVATE diagnostics dict: rescue probes must
+    never leak into the caller-facing per-engine stats (``empty_engines`` /
+    ``gated_engines`` describe engines the caller asked for). The attempt
+    summary — including any gates the probes hit — lives under
+    ``diagnostics["rescue"]``. Returns ``(results, served_by)``; never raises.
+    """
+    candidates = [e for e in settings.rescue_engines if e not in engine_names]
+    if not candidates:
+        return [], None
+    attempted: list[str] = []
+    info: dict[str, Any] = {"attempted": attempted}
+    diagnostics["rescue"] = info
+    per_candidate = settings.rescue_timeout / len(candidates)
+
+    for name in candidates:
+        attempted.append(name)
+        try:
+            engine = get_engine(name)
+        except ValueError:
+            continue
+        rescue_diag: dict[str, Any] = {}
+
+        async def _one() -> list[SearchResult]:
+            await search_limiter.acquire(name)
+            return await engine.search(query, n, filters, diagnostics=rescue_diag)
+
+        try:
+            results = await asyncio.wait_for(_one(), timeout=per_candidate)
+        except (TimeoutError, asyncio.TimeoutError):
+            info.setdefault("timeouts", []).append(name)
+            continue
+        except Exception as e:
+            log.warning("rescue engine %s failed: %s", name, e)
+            continue
+        if rescue_diag.get("gated"):
+            info.setdefault("gated", {}).update(rescue_diag["gated"])
+        if results:
+            info["served_by"] = name
+            info["results"] = len(results)
+            return results, name
+    return [], None
 
 
 def _key(query: str, engines: list[str], max_results: int, filters: SearchFilters) -> str:
@@ -370,6 +472,28 @@ async def aggregate_search(
 
     merged = _merge(buckets, n)
 
+    # Keyless rescue: one bounded recovery attempt when the run came back
+    # empty or nearly-empty with demonstrably unhealthy engines. Rescue
+    # results join the RRF merge (any partial default results keep their
+    # weight and attribution stays honest via each result's `engines`), and
+    # they flow into the cache write below like any other result — a repeat
+    # query within TTL should not re-pay the rescue.
+    rescued_via: str | None = None
+    if _needs_rescue(merged, errors, diagnostics):
+        rescue_bucket, rescued_via = await _rescue(
+            query, n, filters, engine_names, diagnostics
+        )
+        if rescue_bucket:
+            buckets.append(rescue_bucket)
+            merged = _merge(buckets, n)
+            # Attribute the recovery to the gated engines so the gate hint
+            # reads "was captcha-gated → served via searx" instead of the
+            # misleading "(no results)".
+            if rescued_via:
+                fb = diagnostics.setdefault("fallback", {})
+                for name in diagnostics.get("gated", {}):
+                    fb.setdefault(name, rescued_via)
+
     if use_cache and merged:
         await cache.put_search(cache_key, query, engine_names, merged)
 
@@ -381,6 +505,8 @@ async def aggregate_search(
         "lead_snippet": _lead_snippet(query, merged),
         "errors": errors or None,
     }
+    if rescued_via:
+        payload["rescued_via"] = rescued_via
 
     # Surface filter diagnostics ONLY when (a) the user actually set a filter,
     # AND (b) the final result set is sparse. Otherwise omit the field entirely
@@ -408,6 +534,25 @@ async def aggregate_search(
             for name in sorted(set(gated) | set(fallback))
         }
         payload["gated_hint"] = _gate_hint(gated, fallback)
+
+    # Engines that returned 0 raw results with no exception and no detected
+    # gate — the silent failure mode (IP block, markup drift) that otherwise
+    # leaves no trace at all. Same sparseness threshold as filter_diagnostics
+    # so a healthy response with one quiet engine stays clean.
+    if len(merged) <= 3:
+        empty = sorted(
+            name
+            for name, count in diagnostics.get("raw_per_engine", {}).items()
+            if count == 0 and name not in gated and name not in errors
+        )
+        if empty:
+            payload["empty_engines"] = empty
+            payload["empty_hint"] = (
+                f"{', '.join(empty)} returned 0 results with no error and no "
+                "CAPTCHA/consent wall detected — possible silent IP block or a "
+                "markup change. If this persists, configure a proxy (admin UI / "
+                "SEARCH_MCP_PROXY) or pick different engines via `engines=`."
+            )
 
     return payload
 

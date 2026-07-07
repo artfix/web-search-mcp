@@ -88,6 +88,7 @@ def render_search(payload: dict[str, Any]) -> str:
             lines.append("")
             for name, err in errors.items():
                 lines.append(f"- {name}: {err}")
+        lines.extend(_render_search_hints(payload))
         return "\n".join(lines)
 
     for i, r in enumerate(results, 1):
@@ -114,11 +115,38 @@ def render_search(payload: dict[str, Any]) -> str:
         for name, err in errors.items():
             lines.append(f"- {name}: {err}")
 
+    lines.extend(_render_search_hints(payload))
+
     diag = payload.get("filter_diagnostics")
     if diag:
         lines.extend(_render_filter_diagnostics(diag))
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_search_hints(payload: dict[str, Any]) -> list[str]:
+    """Gate / silent-empty / rescue notes the aggregator attached to the payload.
+
+    Rendered in BOTH the results and no-results branches — a gated or silently
+    blocked engine matters most exactly when the list came back empty.
+    """
+    lines: list[str] = []
+    gated_hint = payload.get("gated_hint")
+    if gated_hint:
+        lines.append("")
+        lines.append(f"⚠️ **Gated engines:** {gated_hint}")
+    empty_hint = payload.get("empty_hint")
+    if empty_hint:
+        lines.append("")
+        lines.append(f"⚠️ **Silent engines:** {empty_hint}")
+    rescued = payload.get("rescued_via")
+    if rescued:
+        lines.append("")
+        lines.append(
+            f"ℹ️ **Rescued:** the requested engines came up short; "
+            f"results above include a rescue pass via {rescued}."
+        )
+    return lines
 
 
 def _render_filter_diagnostics(diag: dict[str, Any]) -> list[str]:

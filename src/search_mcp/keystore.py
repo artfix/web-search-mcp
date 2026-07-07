@@ -69,6 +69,22 @@ def load_env_file_into_environ(path: str | Path = ".env") -> None:
             os.environ[key] = val
 
 
+def load_all_env_files() -> None:
+    """Load ``SEARCH_MCP_*`` keys from every supported ``.env`` location.
+
+    Order matters and the loader never overwrites an existing ``os.environ``
+    key, so the effective precedence is:
+
+        real env  >  ./.env (CWD)  >  <config_dir>/.env
+
+    The config-dir file is what makes uvx/PyPI installs configurable: they
+    have no project checkout to hold a ``.env``, but
+    ``~/.config/search-mcp/.env`` is stable regardless of launch directory.
+    """
+    load_env_file_into_environ(".env")
+    load_env_file_into_environ(config_dir() / ".env")
+
+
 # --- file load (mtime-cached for hot reload) --------------------------------
 
 _cache: dict[str, str] = {}
@@ -332,6 +348,7 @@ __all__ = [
     "get_secret",
     "NETWORK_FIELDS",
     "is_configured",
+    "load_all_env_files",
     "load_env_file_into_environ",
     "provider_by_id",
     "provider_status",

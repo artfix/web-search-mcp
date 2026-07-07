@@ -4,6 +4,7 @@ We monkeypatch ``socket.getaddrinfo`` so the "allowed public host" cases never
 touch the real network, and inject controlled IPs into the resolver to exercise
 both the public-allow and private-block paths deterministically.
 """
+import asyncio
 import socket
 
 import pytest
@@ -14,7 +15,22 @@ from search_mcp.url_safety import (
     UnsafeURLError,
     assert_ip_allowed,
     assert_url_allowed,
+    assert_url_allowed_async,
 )
+
+
+@pytest.fixture(params=["sync", "async"])
+def guard(request):
+    """Run each URL-guard test against BOTH variants. The async variant's
+    ``loop.getaddrinfo`` delegates to ``socket.getaddrinfo`` in the executor,
+    so the same monkeypatching covers it."""
+    if request.param == "sync":
+        return assert_url_allowed
+
+    def _run(url):
+        return asyncio.run(assert_url_allowed_async(url))
+
+    return _run
 
 
 def _fake_getaddrinfo(*addresses):
@@ -40,9 +56,9 @@ def public_dns(monkeypatch):
 # --- blocked schemes ------------------------------------------------------
 
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://x/", "gopher://x/", "data:text/plain,hi"])
-def test_rejects_non_http_schemes(url):
+def test_rejects_non_http_schemes(guard, url):
     with pytest.raises(UnsafeURLError):
-        assert_url_allowed(url)
+        guard(url)
 
 
 # --- blocked IP literals (no DNS needed) ----------------------------------
@@ -59,43 +75,43 @@ def test_rejects_non_http_schemes(url):
         "http://0.0.0.0/",                             # unspecified
     ],
 )
-def test_rejects_blocked_ip_literals(url):
+def test_rejects_blocked_ip_literals(guard, url):
     with pytest.raises(UnsafeURLError):
-        assert_url_allowed(url)
+        guard(url)
 
 
-def test_rejects_metadata_host_via_dns(monkeypatch):
+def test_rejects_metadata_host_via_dns(guard, monkeypatch):
     """A normal-looking hostname that *resolves* to a blocked IP is rejected."""
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("169.254.169.254"))
     with pytest.raises(UnsafeURLError):
-        assert_url_allowed("http://metadata.internal.example/")
+        guard("http://metadata.internal.example/")
 
 
-def test_rejects_when_any_resolved_ip_is_blocked(monkeypatch):
+def test_rejects_when_any_resolved_ip_is_blocked(guard, monkeypatch):
     """Mixed A records: one public, one private -> must block."""
     monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34", "10.1.2.3"))
     with pytest.raises(UnsafeURLError):
-        assert_url_allowed("http://rebind.example/")
+        guard("http://rebind.example/")
 
 
-def test_dns_failure_fails_closed(monkeypatch):
+def test_dns_failure_fails_closed(guard, monkeypatch):
     def _boom(*a, **k):
         raise socket.gaierror("no such host")
 
     monkeypatch.setattr(socket, "getaddrinfo", _boom)
     with pytest.raises(UnsafeURLError):
-        assert_url_allowed("http://does-not-resolve.invalid/")
+        guard("http://does-not-resolve.invalid/")
 
 
 # --- allowed public hosts -------------------------------------------------
 
-def test_allows_public_ip_literal():
-    assert assert_url_allowed("http://93.184.216.34/") == "http://93.184.216.34/"
+def test_allows_public_ip_literal(guard):
+    assert guard("http://93.184.216.34/") == "http://93.184.216.34/"
 
 
-def test_allows_public_hostname(public_dns):
+def test_allows_public_hostname(guard, public_dns):
     url = "https://example.com/path?q=1"
-    assert assert_url_allowed(url) == url
+    assert guard(url) == url
 
 
 # --- assert_ip_allowed (redirect-hop checks) ------------------------------
@@ -117,24 +133,24 @@ def allow_private(monkeypatch):
     monkeypatch.setattr(config.settings, "allow_private_hosts", True)
 
 
-def test_allow_private_bypasses_url_check(allow_private):
+def test_allow_private_bypasses_url_check(guard, allow_private):
     # Should NOT raise even though the target is loopback; and no DNS happens.
-    assert assert_url_allowed("http://127.0.0.1:8080/admin") == "http://127.0.0.1:8080/admin"
+    assert guard("http://127.0.0.1:8080/admin") == "http://127.0.0.1:8080/admin"
 
 
-def test_allow_private_bypasses_metadata(allow_private):
+def test_allow_private_bypasses_metadata(guard, allow_private):
     url = "http://169.254.169.254/latest/meta-data/"
-    assert assert_url_allowed(url) == url
+    assert guard(url) == url
 
 
 def test_allow_private_bypasses_ip_check(allow_private):
     assert assert_ip_allowed("10.0.0.1") is None
 
 
-def test_allow_private_still_rejects_bad_scheme(allow_private):
+def test_allow_private_still_rejects_bad_scheme(guard, allow_private):
     # The escape hatch is about destinations, not protocols.
     with pytest.raises(UnsafeURLError):
-        assert_url_allowed("file:///etc/passwd")
+        guard("file:///etc/passwd")
 
 
 # --- config hardening -----------------------------------------------------

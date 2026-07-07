@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # Reuses ci.yml verbatim so the release gate and the PR gate are the same
+  # definition — they can never silently diverge.
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    # Publishes via PyPI Trusted Publishing (OIDC) — no token stored in the
+    # repo. One-time setup on pypi.org: add a "pending publisher" for the
+    # project name `search-mcp` with owner `sweetcornna`, repository
+    # `free-search-mcp`, workflow `release.yml`, environment `pypi`.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

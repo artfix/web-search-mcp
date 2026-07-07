@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import abc
+import asyncio
+import random
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -8,18 +10,18 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from curl_cffi.requests import AsyncSession
-from curl_cffi.requests.exceptions import RequestException
+from curl_cffi.requests.exceptions import RequestException, Timeout
 from selectolax.parser import HTMLParser
 
-from ..browser import pool
+from ..browser import BrowserUnavailableError, pool
 from ..config import settings
+# Shared with the fetch path so search and fetch traffic always present the
+# SAME browser fingerprint — a drift between the two is exactly the
+# inconsistency naive headless detection (DDG anomaly page) looks for.
+from ..httpfetch import _IMPERSONATE
 from ..net import curl_proxy_kwargs
 
 
-# Pinned at chrome131 to match the desktop UA we send elsewhere. curl_cffi
-# uses this token to set the JA3/JA4 + HTTP/2 SETTINGS fingerprint that real
-# Chrome would emit, defeating naive headless detection (DDG anomaly page).
-_IMPERSONATE = "chrome131"
 
 
 Freshness = Literal["day", "week", "month", "year"]
@@ -550,6 +552,43 @@ def raise_for_key_error(engine: str, status: int | None) -> None:
         )
 
 
+# --- transient-failure retry -------------------------------------------------
+# ONE bounded retry for the keyless HTTP path. Deliberately narrow:
+#   * connection errors (reset/refused) — fast failures, worth a single retry
+#   * 429/5xx — transient server states; honor Retry-After up to a small cap
+#   * timeouts — NEVER retried: a request_timeout expiry means the engine is
+#     slow-dead and retrying doubles the whole search's latency envelope
+# Happy path pays zero extra cost; a failing engine adds at most ~3s inside
+# the aggregator's parallel gather.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RETRY_AFTER_CAP = 3.0
+_MAX_ATTEMPTS = 2
+
+
+def _is_retryable_status(status: int) -> bool:
+    return status in _RETRYABLE_STATUSES
+
+
+def _retry_after_seconds(headers: Any) -> float | None:
+    """Parse a ``Retry-After`` header's delta-seconds form.
+
+    The HTTP-date form is deliberately unsupported — with a 3s cap it could
+    only ever clamp to the cap anyway. Returns ``None`` when the header is
+    absent, negative, or unparseable.
+    """
+    try:
+        raw = headers.get("Retry-After") if headers else None
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        val = float(str(raw).strip())
+    except ValueError:
+        return None
+    return val if val >= 0 else None
+
+
 def detect_gate(html: str) -> str | None:
     """Best-effort: classify a page as a gate (``"captcha"``/``"consent"``/
     ``"login"``) when it carries a known wall marker, else ``None``.
@@ -613,15 +652,25 @@ class Engine(abc.ABC):
             and settings.fetch_strategy == "auto"
         ):
             # HTTP succeeded but the page was an interstitial/captcha shell.
-            _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
-            results = self.parse(html)
+            try:
+                _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
+                results = self.parse(html)
+            except BrowserUnavailableError:
+                # No Chromium installed: keep the (empty) HTTP outcome and let
+                # the aggregator surface ONE actionable install hint instead of
+                # a per-engine stack trace.
+                if diagnostics is not None:
+                    diagnostics.setdefault("gated", {})[self.name] = "browser_unavailable"
         # When we got nothing, check whether the page was a gate (CAPTCHA /
         # consent / login wall) and record an honest reason so the aggregator
         # can explain the empty result instead of silently dropping the engine.
+        # setdefault on the ENGINE key too: a browser_unavailable reason
+        # recorded above must not be clobbered by the gate classification of
+        # the very shell the browser render was supposed to get past.
         if not results and diagnostics is not None:
             reason = detect_gate(html)
             if reason:
-                diagnostics.setdefault("gated", {})[self.name] = reason
+                diagnostics.setdefault("gated", {}).setdefault(self.name, reason)
         # Client-side post-filter BEFORE truncation, so we don't waste the budget
         # on hits that the engine returned but the user excluded.
         if diagnostics is not None:
@@ -644,28 +693,63 @@ class Engine(abc.ABC):
         if self.needs_browser or settings.fetch_strategy == "browser":
             _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
             return html
+        try:
+            return await self._http_get(url)
+        except RequestException as http_err:
+            if settings.fetch_strategy == "http":
+                raise
+            try:
+                _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
+            except BrowserUnavailableError:
+                # The browser can't rescue this and its absence is not the
+                # cause — surface the real network error, not an install hint.
+                raise http_err from None
+            return html
+
+    async def _http_get(self, url: str) -> str:
+        """One HTTP GET with at most one retry for transient failures.
+
+        Retry policy lives in the module-level ``_RETRYABLE_STATUSES`` /
+        ``_retry_after_seconds`` helpers; timeouts are never retried. The
+        session is reused across attempts so a retry doesn't re-pay the TLS
+        handshake.
+        """
         # curl_cffi sets the User-Agent matching the impersonated browser, so
         # we deliberately do NOT pass our own UA here — sending a mismatched UA
         # would re-introduce the very fingerprint discrepancy DDG checks for.
-        try:
-            async with AsyncSession(
-                impersonate=_IMPERSONATE,
-                timeout=settings.request_timeout,
-                allow_redirects=True,
-                headers={
-                    "Accept-Language": settings.accept_language,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                **curl_proxy_kwargs(self.name),
-            ) as client:
-                resp = await client.get(url)
+        async with AsyncSession(
+            impersonate=_IMPERSONATE,
+            timeout=settings.request_timeout,
+            allow_redirects=True,
+            headers={
+                "Accept-Language": settings.accept_language,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            **curl_proxy_kwargs(self.name),
+        ) as client:
+            for attempt in range(_MAX_ATTEMPTS):
+                last = attempt + 1 >= _MAX_ATTEMPTS
+                try:
+                    resp = await client.get(url)
+                except Timeout:
+                    raise  # slow-dead engine: retrying doubles search latency
+                except RequestException:
+                    if last:
+                        raise
+                    await asyncio.sleep(random.uniform(0.4, 0.8))
+                    continue
+                if not last and _is_retryable_status(resp.status_code):
+                    delay = _retry_after_seconds(resp.headers)
+                    if delay is not None and delay > _RETRY_AFTER_CAP:
+                        # The server named a window our cap can't honor — a
+                        # capped-sleep retry is a guaranteed second rejection,
+                        # so fail now instead of burning ~3s + a round-trip.
+                        resp.raise_for_status()
+                    await asyncio.sleep(delay if delay is not None else 0.6)
+                    continue
                 resp.raise_for_status()
                 return resp.text
-        except RequestException:
-            if settings.fetch_strategy == "http":
-                raise
-            _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
-            return html
+        raise RequestException(f"{self.name}: retries exhausted for {url}")  # unreachable
 
 
 def text_of(node) -> str:

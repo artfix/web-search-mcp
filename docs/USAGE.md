@@ -82,8 +82,12 @@ output.
 `search` / `research` accept an `engines=[...]` list. Omit it to use the fast
 default pool. Every engine here is **keyless** (no API key, no account).
 
-**Default pool** (all-HTTP, no browser, ~2× faster):
-`duckduckgo`, `mojeek`, `googlenews`.
+**Default pool** (all-HTTP, no browser):
+`duckduckgo`, `mojeek`, `googlenews`, `bing`.
+
+When the pool comes back empty (or nearly empty with gated/erroring engines),
+the aggregator automatically runs one bounded rescue pass via `searx` and
+reports it as `rescued_via`.
 
 **Opt-in extras:**
 
@@ -183,7 +187,7 @@ Copy `.env.example` → `.env` and edit. Every knob is an env var prefixed with
 
 | Var | Default | Meaning |
 |---|---|---|
-| `SEARCH_MCP_DEFAULT_ENGINES` | `["duckduckgo","mojeek","googlenews"]` | engine pool (JSON list) |
+| `SEARCH_MCP_DEFAULT_ENGINES` | `["duckduckgo","mojeek","googlenews","bing"]` | engine pool (JSON list) |
 | `SEARCH_MCP_FETCH_STRATEGY` | `auto` | `auto` / `http` / `browser` |
 | `SEARCH_MCP_SAFESEARCH` | `moderate` | `strict` / `moderate` / `off` |
 | `SEARCH_MCP_REGION` | `us-en` | `cc-lang` token |

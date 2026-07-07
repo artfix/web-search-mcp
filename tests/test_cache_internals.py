@@ -156,3 +156,103 @@ async def test_search_pages_valid_query_still_works(fresh_cache):
     assert len(hits) == 1
     assert hits[0]["url"] == "https://example.com/a"
     await fresh_cache.close()
+
+
+# --- opportunistic maintenance: TTL purge + size cap -------------------------
+
+
+async def test_maintain_purges_expired_rows(fresh_cache, monkeypatch):
+    from search_mcp.config import settings
+
+    conn = await fresh_cache._conn()
+    now = int(__import__("time").time())
+    stale = now - 10_000
+    await conn.execute(
+        "INSERT INTO search_cache (cache_key, query, engines, results, created) "
+        "VALUES ('old', 'q', 'e', '[]', ?)",
+        (stale,),
+    )
+    await conn.execute(
+        "INSERT INTO pages (url, title, content, fetched) "
+        "VALUES ('https://old.example/', 't', 'old body text', ?)",
+        (stale,),
+    )
+    await conn.commit()
+    await fresh_cache.put_page("https://new.example/", "t", "fresh body text")
+
+    monkeypatch.setattr(settings, "cache_ttl_seconds", 3600)
+    await fresh_cache._maintain(conn)
+
+    cur = await conn.execute("SELECT cache_key FROM search_cache")
+    assert await cur.fetchall() == []
+    cur = await conn.execute("SELECT url FROM pages")
+    assert [r[0] for r in await cur.fetchall()] == ["https://new.example/"]
+    # FTS stays consistent: the purged page is gone from full-text search too.
+    assert await fresh_cache.search_pages("old") == []
+    assert len(await fresh_cache.search_pages("fresh")) == 1
+    await fresh_cache.close()
+
+
+async def test_maintain_enforces_size_cap_dropping_oldest(fresh_cache, monkeypatch):
+    from search_mcp.config import settings
+
+    monkeypatch.setattr(settings, "cache_ttl_seconds", 10**9)  # nothing expires
+    conn = await fresh_cache._conn()
+    # ~40 pages x ~50KB => ~2MB file; cap at 1MB.
+    body = "x" * 50_000
+    now = int(__import__("time").time())
+    for i in range(40):
+        await conn.execute(
+            "INSERT INTO pages (url, title, content, fetched) VALUES (?, ?, ?, ?)",
+            (f"https://example.com/{i}", f"t{i}", body, now - (40 - i)),
+        )
+    await conn.commit()
+    assert fresh_cache._db_size() > 1024 * 1024
+
+    monkeypatch.setattr(settings, "cache_max_mb", 1)
+    await fresh_cache._maintain(conn)
+
+    assert fresh_cache._db_size() <= 1024 * 1024
+    cur = await conn.execute("SELECT COUNT(*), MAX(fetched), MIN(fetched) FROM pages")
+    count, newest, oldest = await cur.fetchone()
+    # Some rows survived, and the survivors are the NEWEST ones.
+    assert 0 < count < 40
+    assert newest == now - 1
+    assert oldest > now - 40
+    await fresh_cache.close()
+
+
+async def test_maintain_disabled_when_cap_is_zero(fresh_cache, monkeypatch):
+    from search_mcp.config import settings
+
+    monkeypatch.setattr(settings, "cache_ttl_seconds", 10**9)
+    monkeypatch.setattr(settings, "cache_max_mb", 0)
+    conn = await fresh_cache._conn()
+    body = "y" * 50_000
+    for i in range(30):
+        await fresh_cache.put_page(f"https://example.com/z{i}", "t", body)
+    before = fresh_cache._db_size()
+    await fresh_cache._maintain(conn)
+    cur = await conn.execute("SELECT COUNT(*) FROM pages")
+    assert (await cur.fetchone())[0] == 30
+    assert before > 0
+    await fresh_cache.close()
+
+
+async def test_writes_trigger_maintenance_on_cadence(fresh_cache, monkeypatch):
+    calls = []
+
+    async def _fake_maintain(conn):
+        calls.append(1)
+
+    # _conn() runs one maintenance at init; silence it via the fake AFTER init.
+    await fresh_cache._conn()
+    monkeypatch.setattr(fresh_cache, "_maintain", _fake_maintain)
+    monkeypatch.setattr(type(fresh_cache), "_MAINTAIN_EVERY", 5, raising=True)
+
+    for i in range(12):
+        await fresh_cache.put_page(f"https://example.com/c{i}", "t", "body")
+    # Maintenance is now fire-and-forget; let the scheduled tasks run.
+    await asyncio.sleep(0)
+    assert len(calls) == 2  # at write #5 and #10
+    await fresh_cache.close()

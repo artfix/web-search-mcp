@@ -20,7 +20,6 @@ Caveats:
 
 from __future__ import annotations
 
-from typing import Any
 from urllib.parse import parse_qs, quote_plus, urlparse
 
 from ..config import settings
@@ -85,38 +84,8 @@ class GoogleEngine(Engine):
     needs_browser = False
     # Leave supports_browser_fallback = True (the base default): Google often
     # serves a JS/consent shell to plain HTTP, parse()==[] then recovers via a
-    # Playwright render.
-
-    async def search(
-        self,
-        query: str,
-        max_results: int,
-        filters: SearchFilters | None = None,
-        diagnostics: dict[str, Any] | None = None,
-    ) -> list[SearchResult]:
-        """Scrape Google, falling back to SearXNG when the provider gated us.
-
-        ``base.search()`` already proxies the fetch and records the gate reason
-        into ``diagnostics["gated"][self.name]``. An empty result set almost
-        always means Google served a CAPTCHA/consent shell, so we recover
-        keylessly via the working SearXNG meta-search (which itself proxies
-        Google/Bing). Fallback results keep ``engine="searx"`` for honest
-        attribution. Never raises.
-        """
-        results = await super().search(
-            query, max_results, filters, diagnostics=diagnostics
-        )
-        if results:
-            return results
-        # Empty almost always means a CAPTCHA/consent gate. Recover keyless via
-        # the working SearXNG meta-search (it proxies Google/Bing results).
-        from .searx import SearxEngine
-
-        fb = await SearxEngine().search(query, max_results, filters)
-        if fb and diagnostics is not None:
-            diagnostics.setdefault("gated", {}).setdefault(self.name, "gated")
-            diagnostics.setdefault("fallback", {})[self.name] = "searx"
-        return fb
+    # Playwright render. When even that stays gated, the AGGREGATOR runs the
+    # keyless rescue pass (searx/bing) — the fallback no longer lives here.
 
     def build_url(
         self, query: str, max_results: int, filters: SearchFilters | None = None

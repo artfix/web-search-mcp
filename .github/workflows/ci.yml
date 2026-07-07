@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets release.yml reuse this exact job as its gate — the test matrix is
+  # defined ONCE, so releases can never be gated on a weaker check than PRs.
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check .
+      # The offline suite needs no Chromium: browser paths are faked, and
+      # live-network tests are gated behind SEARCH_MCP_TEST_NETWORK=1.
+      - name: Test
+        run: uv run pytest -q

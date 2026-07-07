@@ -1,10 +1,29 @@
 [project]
 name = "search-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local-first, no-API-key search MCP server. Multi-engine web search, smart fetching, document reading."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "web-search",
+    "search",
+    "scraping",
+    "playwright",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
 dependencies = [
     "mcp[cli]>=1.2.0",
     # [socks] extra so the documented socks5:// proxy works with the httpx
@@ -22,10 +41,18 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.5",
     "anyio>=4.4",
-    "tenacity>=9.0",
     "rapidfuzz>=3.10",
     "extruct>=0.18",
+    # Imported directly (structured.py: w3lib.html.get_base_url), not just a
+    # transitive dep of extruct — declare it so a future extruct can't break us.
+    "w3lib>=2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sweetcornna/free-search-mcp"
+Repository = "https://github.com/sweetcornna/free-search-mcp"
+Issues = "https://github.com/sweetcornna/free-search-mcp/issues"
+Changelog = "https://github.com/sweetcornna/free-search-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 search-mcp = "search_mcp.__main__:main"
@@ -33,7 +60,8 @@ search-mcp-admin = "search_mcp.admin:main"
 search-mcp-login = "search_mcp.login:main"
 
 [build-system]
-requires = ["hatchling"]
+# hatchling>=1.26 for PEP 639 license expression support.
+requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

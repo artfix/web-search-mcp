@@ -15,10 +15,12 @@ Covers (audit item ids in brackets):
 """
 from __future__ import annotations
 
+
 import pytest
 
 from search_mcp import config
 from search_mcp.url_safety import UnsafeURLError
+
 
 
 # --------------------------------------------------------------------------- #

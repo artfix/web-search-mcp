@@ -50,6 +50,45 @@ def _is_transient_nav_error(msg: str) -> bool:
         return False
     return any(marker in msg for marker in _TRANSIENT_NAV_MARKERS)
 
+
+class BrowserUnavailableError(RuntimeError):
+    """The Chromium browser binary is not installed.
+
+    Raised instead of Playwright's raw launch error so every downstream
+    surface (engine errors, fetch errors, gate hints) carries an actionable
+    install command rather than a stack trace. HTTP-only search and fetching
+    are unaffected.
+    """
+
+
+# The ONE canonical install instruction — every surface (engine gate hints,
+# fetch errors) must show these exact commands; a hand-written variant like
+# a bare `playwright install chromium` does not work on uvx installs.
+BROWSER_INSTALL_HINT = (
+    "Install the browser with `uv run playwright install chromium` (source "
+    "checkout) or `uvx --from search-mcp playwright install chromium` "
+    "(uvx/PyPI install), then restart the server."
+)
+
+_MISSING_BROWSER_HINT = (
+    "Playwright's Chromium browser is not installed, so browser-rendered "
+    "engines and JS-heavy fetches are unavailable (HTTP-only search and "
+    "fetching keep working). " + BROWSER_INSTALL_HINT
+)
+
+# Substrings Playwright's launch error always carries when the browser
+# BINARY is missing (as opposed to a crash or a bad flag).
+_MISSING_BROWSER_MARKERS = ("executable doesn't exist", "playwright install")
+
+
+def _is_missing_browser_error(msg: str) -> bool:
+    """True when a launch failure means the browser binary was never
+    downloaded. Pure string check, unit-testable without a browser."""
+    if not msg:
+        return False
+    low = msg.lower()
+    return any(marker in low for marker in _MISSING_BROWSER_MARKERS)
+
 # Anti-detection script borrowed from noapi-google-search-mcp's playbook:
 # disable webdriver flag, fake plugins/languages, skip Chrome runtime check.
 _STEALTH_SCRIPT = """
@@ -91,6 +130,10 @@ class BrowserPool:
         self._ctx: BrowserContext | None = None
         self._page_sema = asyncio.Semaphore(settings.browser_pool_size)
         self._lock = asyncio.Lock()
+        # Set once a launch failed because the browser binary is missing.
+        # Installing it requires a restart, so subsequent calls fail fast
+        # instead of re-paying a ~1s driver start/stop per attempt.
+        self._unavailable_reason: str | None = None
 
     def _launch_args(self) -> list[str]:
         args = [
@@ -108,6 +151,8 @@ class BrowserPool:
         async with self._lock:
             if self._ctx is not None:
                 return self._ctx
+            if self._unavailable_reason is not None:
+                raise BrowserUnavailableError(self._unavailable_reason)
             self._playwright = await async_playwright().start()
 
             user_data_dir = str(settings.cache_dir / "browser_profile")
@@ -160,7 +205,7 @@ class BrowserPool:
                         log.debug("ctx close after add_init_script failure failed")
                     self._ctx = None
                     raise
-            except Exception:
+            except Exception as e:
                 # Launch failed entirely (or stealth re-raised): stop the driver
                 # and reset so we don't leak it across retries.
                 if self._playwright is not None:
@@ -169,6 +214,9 @@ class BrowserPool:
                     except Exception:
                         log.debug("playwright stop after launch failure failed")
                     self._playwright = None
+                if _is_missing_browser_error(str(e)):
+                    self._unavailable_reason = _MISSING_BROWSER_HINT
+                    raise BrowserUnavailableError(self._unavailable_reason) from e
                 raise
             return self._ctx
 
@@ -315,6 +363,9 @@ class BrowserPool:
             if self._playwright:
                 await self._playwright.stop()
                 self._playwright = None
+            # A shutdown is the "restart" the install hint asks for — give the
+            # next launch attempt a clean slate.
+            self._unavailable_reason = None
 
 
 pool = BrowserPool()

@@ -116,7 +116,7 @@ names are available.
 ## Agent operating rules
 
 Prefer the default engines first. They are keyless and fast:
-`duckduckgo`, `mojeek`, and `googlenews`.
+`duckduckgo`, `mojeek`, `googlenews`, and `bing`.
 
 Use opt-in engines only when the task needs them. Examples: `bilibili` for video
 search, `zhihu` for Chinese Q&A, `google` or `serpsearch` for Google-style SERP

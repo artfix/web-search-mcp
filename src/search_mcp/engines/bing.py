@@ -1,4 +1,3 @@
-from typing import Any
 from urllib.parse import quote_plus
 
 from ..config import settings
@@ -31,44 +30,12 @@ class BingEngine(Engine):
     # exists immediately and would short-circuit the wait.
     wait_selector = "li.b_algo"
 
-    async def search(
-        self,
-        query: str,
-        max_results: int,
-        filters: SearchFilters | None = None,
-        diagnostics: dict[str, Any] | None = None,
-    ) -> list[SearchResult]:
-        """Scrape Bing (HTTP-first, browser fallback), then fall back to SearXNG
-        when the provider gated us.
-
-        ``base.search()`` proxies the fetch (HTTP, then a Playwright render if
-        the HTTP body parsed empty) and records any gate into
-        ``diagnostics["gated"][self.name]``. An empty result set almost always
-        means a CAPTCHA/consent gate, so we recover keylessly via the SearXNG
-        meta-search (it proxies Google/Bing). Fallback results keep
-        ``engine="searx"`` for honest attribution. Never raises.
-        """
-        try:
-            results = await super().search(
-                query, max_results, filters, diagnostics=diagnostics
-            )
-        except Exception:
-            # Under fetch_strategy="http", a www4 non-200 (captcha/throttle shell)
-            # makes base._fetch raise instead of returning an empty body. Treat
-            # that as "gated → empty" so the SearXNG fallback below still runs and
-            # the documented never-raise contract holds for every fetch_strategy.
-            results = []
-        if results:
-            return results
-        # Empty almost always means a CAPTCHA/consent gate. Recover keyless via
-        # the working SearXNG meta-search (it proxies Google/Bing results).
-        from .searx import SearxEngine
-
-        fb = await SearxEngine().search(query, max_results, filters)
-        if fb and diagnostics is not None:
-            diagnostics.setdefault("gated", {}).setdefault(self.name, "gated")
-            diagnostics.setdefault("fallback", {})[self.name] = "searx"
-        return fb
+    # No search() override: bing behaves like every other engine now. A raise
+    # (e.g. a www4 non-200 under fetch_strategy="http") lands in the
+    # aggregator's per-engine `errors` map — visible, and enough to trigger
+    # the rescue pass — instead of being swallowed into a fake "silent zero"
+    # the empty-engine hint would then mislabel as "no error". The old SearXNG
+    # fallback moved to the aggregator's rescue pass.
 
     def build_url(
         self, query: str, max_results: int, filters: SearchFilters | None = None

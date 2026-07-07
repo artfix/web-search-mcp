@@ -1,11 +1,12 @@
-from .keystore import load_env_file_into_environ
+from .keystore import load_all_env_files
 from .server import run
 
 
 def main() -> None:
-    # Make SEARCH_MCP_* keys in a local .env visible to the keyed engines
-    # (keystore reads os.environ, which pydantic's .env loading doesn't populate).
-    load_env_file_into_environ()
+    # Make SEARCH_MCP_* keys in ./.env AND <config_dir>/.env visible to the
+    # keyed engines (keystore reads os.environ, which pydantic's .env loading
+    # doesn't populate). The config-dir file covers uvx launches from any CWD.
+    load_all_env_files()
     run()
 
 
