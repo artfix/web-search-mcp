@@ -13,7 +13,7 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException, Timeout
 from selectolax.parser import HTMLParser
 
-from ..browser import pool
+from ..browser import BrowserUnavailableError, pool
 from ..config import settings
 from ..net import curl_proxy_kwargs
 
@@ -652,8 +652,15 @@ class Engine(abc.ABC):
             and settings.fetch_strategy == "auto"
         ):
             # HTTP succeeded but the page was an interstitial/captcha shell.
-            _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
-            results = self.parse(html)
+            try:
+                _, html = await pool.fetch_html(url, wait_selector=self.wait_selector)
+                results = self.parse(html)
+            except BrowserUnavailableError:
+                # No Chromium installed: keep the (empty) HTTP outcome and let
+                # the aggregator surface ONE actionable install hint instead of
+                # a per-engine stack trace.
+                if diagnostics is not None:
+                    diagnostics.setdefault("gated", {})[self.name] = "browser_unavailable"
         # When we got nothing, check whether the page was a gate (CAPTCHA /
         # consent / login wall) and record an honest reason so the aggregator
         # can explain the empty result instead of silently dropping the engine.

@@ -216,21 +216,32 @@ def _filter_hint(drops: dict[str, int], raw_total: int, kept_total: int) -> str:
 
 
 def _gate_hint(gated: dict[str, str], fallback: dict[str, str]) -> str:
-    """One-line explanation of which engines were gated (CAPTCHA/consent/login)
-    and how each was handled (searx fallback, or nothing)."""
+    """One-line explanation of which engines were gated (CAPTCHA/consent/login,
+    or a missing browser) and how each was handled (rescue, or nothing)."""
     parts: list[str] = []
+    browser_missing = False
     for name in sorted(set(gated) | set(fallback)):
         reason = gated.get(name, "gated")
         via = fallback.get(name)
+        if reason == "browser_unavailable":
+            browser_missing = True
+            parts.append(f"{name} needed a browser render that is unavailable")
+            continue
         if via:
             parts.append(f"{name} was {reason}-gated → served via {via}")
         else:
             parts.append(f"{name} was {reason}-gated (no results)")
-    return (
+    hint = (
         "; ".join(parts)
         + ". Configure a proxy (admin UI / SEARCH_MCP_PROXY) to route through a "
         "non-blocked IP, or rely on the keyless default engines."
     )
+    if browser_missing:
+        hint += (
+            " Install the browser with `playwright install chromium` to enable "
+            "browser-rendered recovery."
+        )
+    return hint
 
 
 def _needs_rescue(
