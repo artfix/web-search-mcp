@@ -110,3 +110,13 @@ def test_agent_usage_doc_is_linked_and_covers_core_clients():
     usage = (ROOT / "docs" / "USAGE.md").read_text(encoding="utf-8")
     assert "docs/AGENT_USAGE.md" in readme
     assert "AGENT_USAGE.md" in usage
+
+
+def test_install_script_linux_installs_browser_os_deps():
+    """The Linux branch must use --with-deps (browser binary alone crashes at
+    launch without its shared-library OS deps), with a plain-install fallback.
+    Static assertion on the script text — the branch itself only runs on Linux."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert 'playwright install --with-deps chromium' in text
+    assert '|| run uv run playwright install chromium' in text
+    assert 'uname -s' in text

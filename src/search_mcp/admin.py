@@ -559,6 +559,24 @@ app = Starlette(
 )
 
 
+def _schedule_browser_open(url: str) -> None:
+    """Best-effort: open the admin page in the default browser shortly after
+    startup (giving uvicorn a moment to bind). Disable with
+    SEARCH_MCP_ADMIN_NO_BROWSER=1 (headless boxes, scripts)."""
+    if os.environ.get("SEARCH_MCP_ADMIN_NO_BROWSER"):
+        return
+    import threading
+    import webbrowser
+
+    def _open() -> None:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    threading.Timer(1.0, _open).start()
+
+
 def main() -> None:
     import uvicorn
 
@@ -566,7 +584,9 @@ def main() -> None:
     # button (and the provider 'configured' badges) reflect them too.
     keystore.load_all_env_files()
     port = int(os.environ.get("SEARCH_MCP_ADMIN_PORT", "8765"))
-    print(f"search-mcp admin → http://127.0.0.1:{port}")
+    url = f"http://127.0.0.1:{port}"
+    print(f"search-mcp admin → {url}")
+    _schedule_browser_open(url)
     # Bind to loopback ONLY — this tool reads/writes secrets.
     uvicorn.run(app, host="127.0.0.1", port=port)
 

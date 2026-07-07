@@ -39,16 +39,41 @@ shakedown.
 
 ## 🚀 One-click deploy
 
-One command — keyless engines work immediately, no signup, no key:
+One command — the keyless engines work immediately, no signup, no key, no
+checkout (needs [uv](https://docs.astral.sh/uv/)):
+
+```bash
+claude mcp add search -- uvx search-mcp      # Claude Code
+codex mcp add search -- uvx search-mcp       # Codex
+```
+
+Any other MCP client: point it at the command `uvx search-mcp` (stdio). The
+first run downloads the package from PyPI; every HTTP engine works with no
+further setup.
+
+Optional — browser-rendered engines (`startpage`, `zhihu`, …) and JS-heavy
+page fetches need Chromium once:
+
+```bash
+uvx --from search-mcp playwright install chromium
+```
+
+Without it, HTTP search/fetch keep working, and any call that needs the
+browser returns that exact install command instead of a cryptic failure.
+
+Configuration (all optional) lives in `~/.config/search-mcp/.env` — see
+[Configuration](#configuration).
+
+### Full install (source checkout + client registration)
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/sweetcornna/free-search-mcp/main/scripts/install.sh | bash -s -- --client claude-code
 ```
 
 It clones or updates the project under `~/.local/share/free-search-mcp`,
-installs `uv`, syncs dependencies, installs Chromium for rendered engines,
-smoke-tests the server, and registers the `search` MCP server in Claude Code
-user scope.
+installs `uv`, syncs dependencies, installs Chromium for rendered engines
+(with OS deps on Linux), smoke-tests the server, and registers the `search`
+MCP server in Claude Code user scope.
 
 Other client targets:
 
@@ -283,7 +308,22 @@ category=forum. Try widening or removing one filter.
 
 ## Install
 
-### One-click setup
+### Zero-checkout (uvx, recommended)
+
+```bash
+claude mcp add search -- uvx search-mcp      # Claude Code
+codex mcp add search -- uvx search-mcp       # Codex
+uvx search-mcp                               # or run the stdio server directly
+```
+
+Optional extras, any time:
+
+```bash
+uvx --from search-mcp playwright install chromium   # browser-rendered engines
+uvx --from search-mcp search-mcp-admin               # bilingual config UI (opens browser)
+```
+
+### One-click setup (source checkout)
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/sweetcornna/free-search-mcp/main/scripts/install.sh | bash -s -- --client claude-code
@@ -352,8 +392,13 @@ SEARCH_MCP_TEST_NETWORK=1 uv run pytest -v    # live tests, hit the real web
 
 ## Wire into Claude Code
 
-This repo ships a project-scoped `.mcp.json`, so running `claude` inside the
-project auto-detects the `search` server. To register it globally instead:
+```bash
+claude mcp add search -s user -- uvx search-mcp
+```
+
+From a source checkout instead: this repo ships a project-scoped `.mcp.json`,
+so running `claude` inside the project auto-detects the `search` server; or
+register the checkout globally:
 
 ```bash
 claude mcp add search -s user -- uv --directory /absolute/path/to/free-search-mcp run search-mcp
@@ -361,12 +406,13 @@ claude mcp add search -s user -- uv --directory /absolute/path/to/free-search-mc
 
 ## Wire into Codex
 
-Register the server with the Codex CLI:
-
 ```bash
-codex mcp add search -- uv --directory /absolute/path/to/free-search-mcp run search-mcp
+codex mcp add search -- uvx search-mcp
 codex mcp list
 ```
+
+(Source checkout: swap the command for
+`uv --directory /absolute/path/to/free-search-mcp run search-mcp`.)
 
 ## Wire into Claude Desktop
 
@@ -377,12 +423,15 @@ Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`
 {
   "mcpServers": {
     "search": {
-      "command": "uv",
-      "args": ["--directory", "/absolute/path/to/free-search-mcp", "run", "search-mcp"]
+      "command": "uvx",
+      "args": ["search-mcp"]
     }
   }
 }
 ```
+
+(Source checkout: `"command": "uv", "args": ["--directory",
+"/absolute/path/to/free-search-mcp", "run", "search-mcp"]`.)
 
 Restart Claude Desktop. The nine tools above will appear in the tool
 drawer.
@@ -391,8 +440,8 @@ drawer.
 
 The server speaks plain MCP over stdio. Anything that supports MCP works:
 
-- Codex (`codex mcp add search -- uv --directory /…/free-search-mcp run search-mcp`)
-- Claude Code (`claude mcp add search -s user -- uv --directory /…/free-search-mcp run search-mcp`)
+- Codex (`codex mcp add search -- uvx search-mcp`)
+- Claude Code (`claude mcp add search -s user -- uvx search-mcp`)
 - Cursor / Continue / Cline (use the JSON snippet above)
 - Custom Python / TypeScript clients via the official MCP SDK
 
@@ -401,19 +450,30 @@ system-prompt snippet, see [docs/AGENT_USAGE.md](docs/AGENT_USAGE.md).
 
 ### Installer choice
 
-Generic MCP installers are useful, but they do not replace this script yet:
-`add-mcp` can write config for many clients, Smithery is strongest for registry
-or remote MCP connections, and MCPB is the right future format for clickable
-desktop bundles. This project still needs a Python/uv checkout, Playwright
-Chromium, and a smoke test, so `scripts/install.sh` handles the full bootstrap
-and then performs client registration.
+`uvx search-mcp` (PyPI) is the fastest path and needs no checkout — HTTP
+engines work immediately and Chromium is a single optional follow-up command.
+`scripts/install.sh` remains the full bootstrap for people who want a source
+checkout, Chromium with OS deps, a smoke test, and client registration in one
+shot. Generic MCP installers still have their place: `add-mcp` can write
+config for many clients at once, Smithery is strongest for registry/remote
+MCP connections, and MCPB is the right future format for clickable desktop
+bundles.
 
 ---
 
 ## Configuration
 
 All settings can be overridden by environment variables prefixed with
-`SEARCH_MCP_`:
+`SEARCH_MCP_`. They can live in three places (highest precedence first):
+real environment variables → `./.env` in the launch directory (source
+checkouts) → `~/.config/search-mcp/.env` (the stable location for uvx/PyPI
+installs; directory overridable via `SEARCH_MCP_CONFIG_DIR`).
+
+API keys and the proxy are easiest to manage in the admin UI
+(`search-mcp-admin`, opens your browser automatically; set
+`SEARCH_MCP_ADMIN_NO_BROWSER=1` to suppress).
+
+Available knobs:
 
 | Var | Default | Meaning |
 |---|---|---|

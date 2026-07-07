@@ -116,3 +116,45 @@ def test_clear_removes_key(client):
 def test_status_endpoint_shape(client):
     providers = client.get("/api/status").json()["providers"]
     assert set(providers) == {p.id for p in keystore.PROVIDERS}
+
+
+# --- auto-open browser on startup --------------------------------------------
+
+
+def test_schedule_browser_open_schedules_timer(monkeypatch):
+    import threading
+
+    from search_mcp import admin as admin_mod
+
+    created: list = []
+
+    class _FakeTimer:
+        def __init__(self, delay, fn):
+            created.append((delay, fn))
+
+        def start(self):
+            pass
+
+    monkeypatch.delenv("SEARCH_MCP_ADMIN_NO_BROWSER", raising=False)
+    monkeypatch.setattr(threading, "Timer", _FakeTimer)
+    admin_mod._schedule_browser_open("http://127.0.0.1:8765")
+    assert len(created) == 1
+
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    created[0][1]()  # run the scheduled callback
+    assert opened == ["http://127.0.0.1:8765"]
+
+
+def test_schedule_browser_open_respects_no_browser_env(monkeypatch):
+    import threading
+
+    from search_mcp import admin as admin_mod
+
+    monkeypatch.setenv("SEARCH_MCP_ADMIN_NO_BROWSER", "1")
+
+    def _boom(*a, **k):
+        raise AssertionError("Timer must not be created when disabled")
+
+    monkeypatch.setattr(threading, "Timer", _boom)
+    admin_mod._schedule_browser_open("http://127.0.0.1:8765")
