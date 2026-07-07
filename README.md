@@ -1,7 +1,7 @@
 # free-search-mcp
 
 <p align="center">
-  <img src="docs/search.gif" alt="free-search-mcp — one research() call returns a cited Markdown brief, no API key" width="820">
+  <img src="https://raw.githubusercontent.com/sweetcornna/free-search-mcp/main/docs/search.gif" alt="free-search-mcp — one research() call returns a cited Markdown brief, no API key" width="820">
 </p>
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
