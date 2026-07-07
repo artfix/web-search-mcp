@@ -160,3 +160,50 @@ def test_every_provider_engine_is_registered():
     for p in keystore.PROVIDERS:
         assert p.engine in ENGINES, f"{p.id} -> {p.engine} not registered"
         assert get_engine(p.engine).name == p.engine
+
+
+# --- load_all_env_files: CWD .env + config-dir .env precedence ---------------
+
+
+def test_load_all_env_files_cwd_beats_config_dir(tmp_path, monkeypatch):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    (cwd / ".env").write_text("SEARCH_MCP_PRECEDENCE_PROBE=from-cwd\n")
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / ".env").write_text(
+        "SEARCH_MCP_PRECEDENCE_PROBE=from-config-dir\n"
+        "SEARCH_MCP_ONLY_IN_CONFIG=cfg-value\n"
+    )
+    monkeypatch.setenv("SEARCH_MCP_CONFIG_DIR", str(cfg))
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("SEARCH_MCP_PRECEDENCE_PROBE", raising=False)
+    monkeypatch.delenv("SEARCH_MCP_ONLY_IN_CONFIG", raising=False)
+
+    keystore.load_all_env_files()
+    # CWD wins the conflict; config-dir still fills keys the CWD file lacks.
+    assert os.environ["SEARCH_MCP_PRECEDENCE_PROBE"] == "from-cwd"
+    assert os.environ["SEARCH_MCP_ONLY_IN_CONFIG"] == "cfg-value"
+    monkeypatch.delenv("SEARCH_MCP_PRECEDENCE_PROBE")
+    monkeypatch.delenv("SEARCH_MCP_ONLY_IN_CONFIG")
+
+
+def test_load_all_env_files_real_env_beats_both(tmp_path, monkeypatch):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    (cwd / ".env").write_text("SEARCH_MCP_PRECEDENCE_PROBE=from-cwd\n")
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / ".env").write_text("SEARCH_MCP_PRECEDENCE_PROBE=from-config-dir\n")
+    monkeypatch.setenv("SEARCH_MCP_CONFIG_DIR", str(cfg))
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("SEARCH_MCP_PRECEDENCE_PROBE", "from-real-env")
+
+    keystore.load_all_env_files()
+    assert os.environ["SEARCH_MCP_PRECEDENCE_PROBE"] == "from-real-env"
+
+
+def test_load_all_env_files_missing_files_are_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEARCH_MCP_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    monkeypatch.chdir(tmp_path)
+    keystore.load_all_env_files()  # must not raise

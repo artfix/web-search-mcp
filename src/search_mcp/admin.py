@@ -562,9 +562,9 @@ app = Starlette(
 def main() -> None:
     import uvicorn
 
-    # Load SEARCH_MCP_* keys from a local .env so the Test button (and the
-    # provider 'configured' badges) reflect .env-supplied keys too.
-    keystore.load_env_file_into_environ()
+    # Load SEARCH_MCP_* keys from ./.env and <config_dir>/.env so the Test
+    # button (and the provider 'configured' badges) reflect them too.
+    keystore.load_all_env_files()
     port = int(os.environ.get("SEARCH_MCP_ADMIN_PORT", "8765"))
     print(f"search-mcp admin → http://127.0.0.1:{port}")
     # Bind to loopback ONLY — this tool reads/writes secrets.

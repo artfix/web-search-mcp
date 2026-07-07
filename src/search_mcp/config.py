@@ -4,11 +4,22 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .keystore import config_dir
+
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "search-mcp"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="SEARCH_MCP_", env_file=".env", extra="ignore")
+    # Two .env locations so uvx/PyPI installs (no project checkout) have a
+    # stable config file. pydantic-settings gives LATER entries precedence,
+    # matching keystore.load_all_env_files: real env > ./.env > config-dir .env.
+    # (config_dir respects SEARCH_MCP_CONFIG_DIR; keystore is stdlib-only, so
+    # no import cycle.)
+    model_config = SettingsConfigDict(
+        env_prefix="SEARCH_MCP_",
+        env_file=(str(config_dir() / ".env"), ".env"),
+        extra="ignore",
+    )
 
     cache_dir: Path = DEFAULT_CACHE_DIR
     cache_ttl_seconds: int = 60 * 60 * 24 * 7
