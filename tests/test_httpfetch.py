@@ -8,7 +8,6 @@ documents' strict mode and structured's keep-the-shell mode.
 
 from __future__ import annotations
 
-import socket
 
 import pytest
 
@@ -17,21 +16,6 @@ from search_mcp.url_safety import UnsafeURLError
 
 # pytest.ini sets `asyncio_mode = auto` so async tests are auto-marked.
 
-
-@pytest.fixture(autouse=True)
-def _public_dns(monkeypatch):
-    def _resolver(host, port, *args, **kwargs):
-        return [
-            (
-                socket.AF_INET,
-                socket.SOCK_STREAM,
-                socket.IPPROTO_TCP,
-                "",
-                ("93.184.216.34", port or 0),
-            )
-        ]
-
-    monkeypatch.setattr(socket, "getaddrinfo", _resolver)
 
 
 class _StreamCtx:

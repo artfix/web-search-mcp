@@ -1,4 +1,3 @@
-from typing import Any
 from urllib.parse import quote_plus
 
 from ..config import settings
@@ -31,31 +30,12 @@ class BingEngine(Engine):
     # exists immediately and would short-circuit the wait.
     wait_selector = "li.b_algo"
 
-    async def search(
-        self,
-        query: str,
-        max_results: int,
-        filters: SearchFilters | None = None,
-        diagnostics: dict[str, Any] | None = None,
-    ) -> list[SearchResult]:
-        """Scrape Bing (HTTP-first, browser render on an empty parse).
-
-        Under fetch_strategy="http", a www4 non-200 (captcha/throttle shell)
-        makes base._fetch RAISE instead of returning an empty body. Normalize
-        that to an empty result set — recorded as a silent zero in diagnostics
-        so the aggregator's rescue pass and empty-engine hint still see it —
-        preserving bing's documented never-raise contract. The old SearXNG
-        fallback moved to the aggregator's rescue pass.
-        """
-        try:
-            return await super().search(
-                query, max_results, filters, diagnostics=diagnostics
-            )
-        except Exception:
-            if diagnostics is not None:
-                diagnostics.setdefault("raw_per_engine", {}).setdefault(self.name, 0)
-                diagnostics.setdefault("after_filter_per_engine", {}).setdefault(self.name, 0)
-            return []
+    # No search() override: bing behaves like every other engine now. A raise
+    # (e.g. a www4 non-200 under fetch_strategy="http") lands in the
+    # aggregator's per-engine `errors` map — visible, and enough to trigger
+    # the rescue pass — instead of being swallowed into a fake "silent zero"
+    # the empty-engine hint would then mislabel as "no error". The old SearXNG
+    # fallback moved to the aggregator's rescue pass.
 
     def build_url(
         self, query: str, max_results: int, filters: SearchFilters | None = None

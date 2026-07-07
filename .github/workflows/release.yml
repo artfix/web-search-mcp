@@ -5,20 +5,10 @@ on:
     tags: ["v*"]
 
 jobs:
+  # Reuses ci.yml verbatim so the release gate and the PR gate are the same
+  # definition — they can never silently diverge.
   test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: uv sync --locked
-      - run: uv run ruff check .
-      - run: uv run pytest -q
+    uses: ./.github/workflows/ci.yml
 
   publish:
     needs: test

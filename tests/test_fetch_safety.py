@@ -15,33 +15,12 @@ Covers (audit item ids in brackets):
 """
 from __future__ import annotations
 
-import socket
 
 import pytest
 
 from search_mcp import config
 from search_mcp.url_safety import UnsafeURLError
 
-
-@pytest.fixture(autouse=True)
-def _public_dns(monkeypatch):
-    """Hermetic DNS: resolve every hostname to a fixed public IP so the SSRF
-    guard never depends on the machine's real resolver (some environments
-    filter DNS through 198.18.x, a blocked reserved range). IP-literal tests
-    are unaffected — literals never hit getaddrinfo."""
-
-    def _resolver(host, port, *args, **kwargs):
-        return [
-            (
-                socket.AF_INET,
-                socket.SOCK_STREAM,
-                socket.IPPROTO_TCP,
-                "",
-                ("93.184.216.34", port or 0),
-            )
-        ]
-
-    monkeypatch.setattr(socket, "getaddrinfo", _resolver)
 
 
 # --------------------------------------------------------------------------- #

@@ -158,3 +158,25 @@ def test_schedule_browser_open_respects_no_browser_env(monkeypatch):
 
     monkeypatch.setattr(threading, "Timer", _boom)
     admin_mod._schedule_browser_open("http://127.0.0.1:8765")
+
+
+def test_schedule_browser_open_explicit_falsy_value_keeps_autopen(monkeypatch):
+    import threading
+
+    from search_mcp import admin as admin_mod
+
+    created: list = []
+
+    class _FakeTimer:
+        def __init__(self, delay, fn):
+            created.append((delay, fn))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(threading, "Timer", _FakeTimer)
+    for falsy in ("0", "false", "no", "off", ""):
+        created.clear()
+        monkeypatch.setenv("SEARCH_MCP_ADMIN_NO_BROWSER", falsy)
+        admin_mod._schedule_browser_open("http://127.0.0.1:8765")
+        assert len(created) == 1, f"value {falsy!r} must not disable the auto-open"

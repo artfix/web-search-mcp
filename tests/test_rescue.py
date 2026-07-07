@@ -243,12 +243,13 @@ async def test_google_gated_returns_empty_no_engine_level_fallback(monkeypatch):
     assert "fallback" not in diag
 
 
-async def test_bing_http_raise_normalizes_to_silent_empty(monkeypatch):
-    """Under fetch_strategy='http' a www4 non-200 raises inside base._fetch;
-    bing keeps its never-raise contract by degrading to a recorded silent
-    zero, which the aggregator's rescue/empty-hint machinery picks up."""
+async def test_bing_http_raise_propagates_like_any_engine(monkeypatch):
+    """bing has no swallow-everything wrapper anymore: a raise surfaces to the
+    aggregator's errors map (visible, and enough to trigger rescue) instead of
+    masquerading as a 'silent zero' the empty-hint would mislabel 'no error'."""
     from unittest.mock import AsyncMock
 
+    import pytest as _pytest
     from curl_cffi.requests.exceptions import RequestException
 
     from search_mcp.engines.bing import BingEngine
@@ -257,8 +258,46 @@ async def test_bing_http_raise_normalizes_to_silent_empty(monkeypatch):
     monkeypatch.setattr(
         engine, "_fetch", AsyncMock(side_effect=RequestException("non-200 shell"))
     )
+    with _pytest.raises(RequestException):
+        await engine.search("anything", 5, diagnostics={})
 
-    diag: dict = {}
-    out = await engine.search("anything", 5, diagnostics=diag)
-    assert out == []
-    assert diag["raw_per_engine"]["bing"] == 0
+
+async def test_three_results_with_gate_still_rescues(monkeypatch):
+    """Rescue and the sparse-warning hints share the <=3 threshold: a run must
+    never be 'sparse enough to warn about' yet 'too healthy to rescue'."""
+    searx = _StubEngine("searx", _mk_results("searx", 5, prefix="rescue"))
+    _wire(
+        monkeypatch,
+        {
+            "alpha": _StubEngine("alpha", _mk_results("alpha", 3)),
+            "beta": _StubEngine("beta", [], gate="captcha"),
+            "searx": searx,
+        },
+    )
+    out = await aggregate_search("q", engines=["alpha", "beta"], use_cache=False)
+    assert out["rescued_via"] == "searx"
+    # The recovery is attributed to the gated engine in the payload.
+    assert out["gated_engines"]["beta"]["fallback"] == "searx"
+    assert "served via searx" in out["gated_hint"]
+
+
+async def test_failed_rescue_probe_does_not_pollute_caller_diagnostics(monkeypatch):
+    """A rescue engine that comes back empty (or gated) is an internal probe:
+    it must not appear in empty_engines/gated_engines, which describe the
+    engines the CALLER asked for."""
+    searx = _StubEngine("searx", [], gate="no_live_instance")
+    bing = _StubEngine("bing", _mk_results("bing", 2, prefix="rescue"))
+    _wire(
+        monkeypatch,
+        {
+            "duckduckgo": _StubEngine("duckduckgo", []),
+            "searx": searx,
+            "bing": bing,
+        },
+    )
+    out = await aggregate_search("q", engines=["duckduckgo"], use_cache=False)
+    assert out["rescued_via"] == "bing"
+    assert "searx" not in out.get("empty_engines", [])
+    assert "searx" not in (out.get("gated_engines") or {})
+    # The probe's outcome is still visible under the rescue summary for debugging.
+    assert out.get("gated_engines") is None or "searx" not in out["gated_engines"]

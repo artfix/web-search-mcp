@@ -61,12 +61,19 @@ class BrowserUnavailableError(RuntimeError):
     """
 
 
+# The ONE canonical install instruction — every surface (engine gate hints,
+# fetch errors) must show these exact commands; a hand-written variant like
+# a bare `playwright install chromium` does not work on uvx installs.
+BROWSER_INSTALL_HINT = (
+    "Install the browser with `uv run playwright install chromium` (source "
+    "checkout) or `uvx --from search-mcp playwright install chromium` "
+    "(uvx/PyPI install), then restart the server."
+)
+
 _MISSING_BROWSER_HINT = (
     "Playwright's Chromium browser is not installed, so browser-rendered "
     "engines and JS-heavy fetches are unavailable (HTTP-only search and "
-    "fetching keep working). Install it with `uv run playwright install "
-    "chromium` (source checkout) or `uvx --from search-mcp playwright "
-    "install chromium` (PyPI/uvx install), then restart the server."
+    "fetching keep working). " + BROWSER_INSTALL_HINT
 )
 
 # Substrings Playwright's launch error always carries when the browser

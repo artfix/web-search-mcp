@@ -150,3 +150,54 @@ async def test_aggregate_renders_single_install_hint(monkeypatch):
     assert out["results"] == []
     assert out["gated_engines"]["startpage"]["reason"] == "browser_unavailable"
     assert "playwright install chromium" in out["gated_hint"]
+
+
+async def test_gate_shell_does_not_clobber_browser_unavailable(monkeypatch):
+    """Regression: the gate classifier runs on the same shell the (failed)
+    browser render was meant to get past — it must not overwrite the
+    browser_unavailable reason, or the install hint is lost exactly when it
+    matters most."""
+
+    async def _raise(*a, **kw):
+        raise BrowserUnavailableError("Chromium missing")
+
+    monkeypatch.setattr("search_mcp.engines.base.pool.fetch_html", _raise)
+
+    engine = _NoResultsEngine()
+
+    async def _fetch(url):
+        return "<html>/sorry/index unusual traffic</html>"  # a detectable gate
+
+    monkeypatch.setattr(engine, "_fetch", _fetch)
+
+    diag: dict = {}
+    out = await engine.search("anything", 5, diagnostics=diag)
+    assert out == []
+    assert diag["gated"]["dummy"] == "browser_unavailable"
+
+
+async def test_fetch_surfaces_http_error_not_install_hint(monkeypatch):
+    """When the HTTP path fails AND the browser is missing, the browser's
+    absence is not the cause — the real network error must surface, not a
+    multi-line install hint masquerading as the failure."""
+    from curl_cffi.requests.exceptions import RequestException
+
+    async def _raise(*a, **kw):
+        raise BrowserUnavailableError("Chromium missing")
+
+    monkeypatch.setattr("search_mcp.engines.base.pool.fetch_html", _raise)
+
+    engine = _NoResultsEngine()
+
+    async def _http_get(url):
+        raise RequestException("HTTP 503 from upstream")
+
+    monkeypatch.setattr(engine, "_http_get", _http_get)
+
+    try:
+        await engine._fetch("https://dummy.example/search")
+        raise AssertionError("expected RequestException")
+    except RequestException as e:
+        assert "503" in str(e)
+    except BrowserUnavailableError:
+        raise AssertionError("install hint must not mask the real HTTP error")

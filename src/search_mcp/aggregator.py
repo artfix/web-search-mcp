@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
+from .browser import BROWSER_INSTALL_HINT
 from .cache import cache
 from .config import settings
 from .engines import ENGINES, SearchFilters, SearchResult, get_engine
@@ -217,30 +218,37 @@ def _filter_hint(drops: dict[str, int], raw_total: int, kept_total: int) -> str:
 
 def _gate_hint(gated: dict[str, str], fallback: dict[str, str]) -> str:
     """One-line explanation of which engines were gated (CAPTCHA/consent/login,
-    or a missing browser) and how each was handled (rescue, or nothing)."""
+    or a missing browser) and how each was handled (rescue, or nothing).
+
+    Remedies are per-cause: proxy advice only when a real gate (a remote wall)
+    was hit; the canonical install hint only when a browser was missing —
+    telling someone to configure a proxy for a missing binary is noise.
+    """
     parts: list[str] = []
     browser_missing = False
+    real_gates = False
     for name in sorted(set(gated) | set(fallback)):
         reason = gated.get(name, "gated")
         via = fallback.get(name)
         if reason == "browser_unavailable":
             browser_missing = True
-            parts.append(f"{name} needed a browser render that is unavailable")
-            continue
-        if via:
-            parts.append(f"{name} was {reason}-gated → served via {via}")
+            desc = f"{name} needed a browser render that is unavailable"
         else:
-            parts.append(f"{name} was {reason}-gated (no results)")
-    hint = (
-        "; ".join(parts)
-        + ". Configure a proxy (admin UI / SEARCH_MCP_PROXY) to route through a "
-        "non-blocked IP, or rely on the keyless default engines."
-    )
-    if browser_missing:
+            real_gates = True
+            desc = f"{name} was {reason}-gated"
+        if via:
+            desc += f" → served via {via}"
+        elif reason != "browser_unavailable":
+            desc += " (no results)"
+        parts.append(desc)
+    hint = "; ".join(parts) + "."
+    if real_gates:
         hint += (
-            " Install the browser with `playwright install chromium` to enable "
-            "browser-rendered recovery."
+            " Configure a proxy (admin UI / SEARCH_MCP_PROXY) to route through "
+            "a non-blocked IP, or rely on the keyless default engines."
         )
+    if browser_missing:
+        hint += " " + BROWSER_INSTALL_HINT
     return hint
 
 
@@ -249,16 +257,18 @@ def _needs_rescue(
 ) -> bool:
     """Decide whether the keyless rescue pass should run.
 
-    Triggers only when the run is empty, or nearly empty (<=2) AND
-    demonstrably unhealthy — an engine errored, hit a gate, or silently
-    returned zero. A healthy niche query that legitimately yields 1-2 results
-    must NOT trigger network work: that is the normal-path latency guarantee.
+    Triggers only when the run is empty, or sparse (<=3 — the SAME threshold
+    the empty-engine and filter hints use, so a run is never simultaneously
+    "sparse enough to warn about" and "too healthy to rescue") AND
+    demonstrably unhealthy: an engine errored, hit a gate, or silently
+    returned zero. A healthy niche query that legitimately yields a few
+    results must NOT trigger network work — the normal-path latency guarantee.
     """
     if not settings.rescue_enabled:
         return False
     if len(merged) == 0:
         return True
-    if len(merged) > 2:
+    if len(merged) > 3:
         return False
     raw = diagnostics.get("raw_per_engine", {})
     return bool(errors) or bool(diagnostics.get("gated")) or any(
@@ -272,46 +282,57 @@ async def _rescue(
     filters: SearchFilters,
     engine_names: list[str],
     diagnostics: dict[str, Any],
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], str | None]:
     """One bounded keyless recovery pass via ``settings.rescue_engines``.
 
-    Sequential, first engine that yields results wins; the whole pass is
-    capped at ``settings.rescue_timeout``. Calls the engines directly — never
-    re-enters ``aggregate_search`` — and the candidate list excludes engines
-    the caller already ran, so there is no recursion and no self-rescue.
-    Never raises.
+    Sequential, first engine that yields results wins. Each candidate gets an
+    equal slice of ``settings.rescue_timeout`` (rate-limiter wait included),
+    so a slow first candidate (searx races public instances) can never starve
+    a fast later one. Calls the engines directly — never re-enters
+    ``aggregate_search`` — and the candidate list excludes engines the caller
+    already ran, so there is no recursion and no self-rescue.
+
+    Each candidate runs with a PRIVATE diagnostics dict: rescue probes must
+    never leak into the caller-facing per-engine stats (``empty_engines`` /
+    ``gated_engines`` describe engines the caller asked for). The attempt
+    summary — including any gates the probes hit — lives under
+    ``diagnostics["rescue"]``. Returns ``(results, served_by)``; never raises.
     """
     candidates = [e for e in settings.rescue_engines if e not in engine_names]
     if not candidates:
-        return []
+        return [], None
     attempted: list[str] = []
     info: dict[str, Any] = {"attempted": attempted}
     diagnostics["rescue"] = info
+    per_candidate = settings.rescue_timeout / len(candidates)
 
-    async def _run() -> list[SearchResult]:
-        for name in candidates:
-            attempted.append(name)
-            try:
-                engine = get_engine(name)
-            except ValueError:
-                continue
+    for name in candidates:
+        attempted.append(name)
+        try:
+            engine = get_engine(name)
+        except ValueError:
+            continue
+        rescue_diag: dict[str, Any] = {}
+
+        async def _one() -> list[SearchResult]:
             await search_limiter.acquire(name)
-            try:
-                results = await engine.search(query, n, filters, diagnostics=diagnostics)
-            except Exception as e:
-                log.warning("rescue engine %s failed: %s", name, e)
-                continue
-            if results:
-                info["served_by"] = name
-                info["results"] = len(results)
-                return results
-        return []
+            return await engine.search(query, n, filters, diagnostics=rescue_diag)
 
-    try:
-        return await asyncio.wait_for(_run(), timeout=settings.rescue_timeout)
-    except (TimeoutError, asyncio.TimeoutError):
-        info["timeout"] = True
-        return []
+        try:
+            results = await asyncio.wait_for(_one(), timeout=per_candidate)
+        except (TimeoutError, asyncio.TimeoutError):
+            info.setdefault("timeouts", []).append(name)
+            continue
+        except Exception as e:
+            log.warning("rescue engine %s failed: %s", name, e)
+            continue
+        if rescue_diag.get("gated"):
+            info.setdefault("gated", {}).update(rescue_diag["gated"])
+        if results:
+            info["served_by"] = name
+            info["results"] = len(results)
+            return results, name
+    return [], None
 
 
 def _key(query: str, engines: list[str], max_results: int, filters: SearchFilters) -> str:
@@ -459,11 +480,19 @@ async def aggregate_search(
     # query within TTL should not re-pay the rescue.
     rescued_via: str | None = None
     if _needs_rescue(merged, errors, diagnostics):
-        rescue_bucket = await _rescue(query, n, filters, engine_names, diagnostics)
+        rescue_bucket, rescued_via = await _rescue(
+            query, n, filters, engine_names, diagnostics
+        )
         if rescue_bucket:
             buckets.append(rescue_bucket)
             merged = _merge(buckets, n)
-            rescued_via = diagnostics.get("rescue", {}).get("served_by")
+            # Attribute the recovery to the gated engines so the gate hint
+            # reads "was captcha-gated → served via searx" instead of the
+            # misleading "(no results)".
+            if rescued_via:
+                fb = diagnostics.setdefault("fallback", {})
+                for name in diagnostics.get("gated", {}):
+                    fb.setdefault(name, rescued_via)
 
     if use_cache and merged:
         await cache.put_search(cache_key, query, engine_names, merged)

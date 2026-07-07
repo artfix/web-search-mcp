@@ -486,6 +486,7 @@ Available knobs:
 | `SEARCH_MCP_FETCH_RATE_LIMIT_PER_MINUTE` | `20` | shared `fetch` bucket |
 | `SEARCH_MCP_CACHE_DIR` | `~/.cache/search-mcp` | |
 | `SEARCH_MCP_CACHE_TTL_SECONDS` | `604800` | 7 days |
+| `SEARCH_MCP_CACHE_MAX_MB` | `512` | size cap on the cache file; `0` disables |
 | `SEARCH_MCP_FETCH_STRATEGY` | `auto` | `auto` / `http` / `browser` |
 | `SEARCH_MCP_BROWSER_HEADLESS` | `true` | |
 | `SEARCH_MCP_BROWSER_POOL_SIZE` | `2` | concurrent pages |

@@ -252,5 +252,7 @@ async def test_writes_trigger_maintenance_on_cadence(fresh_cache, monkeypatch):
 
     for i in range(12):
         await fresh_cache.put_page(f"https://example.com/c{i}", "t", "body")
+    # Maintenance is now fire-and-forget; let the scheduled tasks run.
+    await asyncio.sleep(0)
     assert len(calls) == 2  # at write #5 and #10
     await fresh_cache.close()

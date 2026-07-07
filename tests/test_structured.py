@@ -5,29 +5,9 @@ goal is to verify our wiring around extruct, not extruct itself.
 """
 from __future__ import annotations
 
-import socket
 
 import pytest
 
-
-@pytest.fixture(autouse=True)
-def _public_dns(monkeypatch):
-    """Hermetic DNS: resolve every hostname to a fixed public IP so the SSRF
-    guard never depends on the machine's real resolver (some environments
-    filter DNS through 198.18.x, a blocked reserved range)."""
-
-    def _resolver(host, port, *args, **kwargs):
-        return [
-            (
-                socket.AF_INET,
-                socket.SOCK_STREAM,
-                socket.IPPROTO_TCP,
-                "",
-                ("93.184.216.34", port or 0),
-            )
-        ]
-
-    monkeypatch.setattr(socket, "getaddrinfo", _resolver)
 
 _JSONLD_HTML = """\
 <!DOCTYPE html>

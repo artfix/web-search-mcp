@@ -120,12 +120,27 @@ async def test_429_honors_retry_after(fake_session, sleeps):
     assert sleeps == [1.0]
 
 
-async def test_429_retry_after_is_capped(fake_session, sleeps):
+async def test_429_retry_after_beyond_cap_fails_fast(fake_session, sleeps):
+    """Retry-After far beyond our cap means a capped-sleep retry is a
+    guaranteed second rejection — fail immediately, don't burn ~3s + a
+    round-trip on it."""
     fake_session.script = [
         _FakeResp(status=429, headers={"Retry-After": "120"}),
         _FakeResp(text="page"),
     ]
-    await _DummyEngine()._http_get(URL)
+    with pytest.raises(HTTPError):
+        await _DummyEngine()._http_get(URL)
+    assert fake_session.calls == 1
+    assert sleeps == []
+
+
+async def test_429_retry_after_within_cap_is_honored(fake_session, sleeps):
+    fake_session.script = [
+        _FakeResp(status=429, headers={"Retry-After": str(_RETRY_AFTER_CAP)}),
+        _FakeResp(text="page"),
+    ]
+    out = await _DummyEngine()._http_get(URL)
+    assert out == "page"
     assert sleeps == [_RETRY_AFTER_CAP]
 
 

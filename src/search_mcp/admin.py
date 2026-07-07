@@ -562,8 +562,10 @@ app = Starlette(
 def _schedule_browser_open(url: str) -> None:
     """Best-effort: open the admin page in the default browser shortly after
     startup (giving uvicorn a moment to bind). Disable with
-    SEARCH_MCP_ADMIN_NO_BROWSER=1 (headless boxes, scripts)."""
-    if os.environ.get("SEARCH_MCP_ADMIN_NO_BROWSER"):
+    SEARCH_MCP_ADMIN_NO_BROWSER=1 (headless boxes, scripts); explicit falsy
+    values ("0", "false", "no", "off", "") keep the auto-open."""
+    flag = (os.environ.get("SEARCH_MCP_ADMIN_NO_BROWSER") or "").strip().lower()
+    if flag and flag not in ("0", "false", "no", "off"):
         return
     import threading
     import webbrowser

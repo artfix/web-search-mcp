@@ -17,16 +17,13 @@ from .cache import cache
 from .config import settings
 from .formatting import estimate_tokens, smart_truncate
 from .gnews import is_google_news_url, resolve_google_news_url
-# Shared GET plumbing lives in httpfetch; the private names are re-exported
-# here for back-compat (documents/structured/tests historically import them
-# from fetcher).
+# Shared GET plumbing lives in httpfetch. The first three names are
+# re-exported for the tests that exercise them through this module
+# (fetch_safety, charset); everything else imports from httpfetch directly.
 from .httpfetch import (  # noqa: F401
-    _MAX_REDIRECTS,
     MaxBytesExceededError,
     _accumulate_capped,
-    _check_content_length,
     _decode_body,
-    _resolve_redirect_location,
     curl_session_kwargs,
     curl_stream_capped,
 )

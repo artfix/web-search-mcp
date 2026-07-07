@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets release.yml reuse this exact job as its gate — the test matrix is
+  # defined ONCE, so releases can never be gated on a weaker check than PRs.
+  workflow_call:
 
 jobs:
   test:

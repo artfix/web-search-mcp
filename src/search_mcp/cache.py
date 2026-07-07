@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS pages (
     fetched  INTEGER NOT NULL
 );
 
+-- Maintenance (TTL purge + oldest-first eviction) filters and sorts on the
+-- timestamps; without these, every pass full-scans the blob-heavy tables.
+CREATE INDEX IF NOT EXISTS pages_fetched_idx ON pages(fetched);
+CREATE INDEX IF NOT EXISTS search_cache_created_idx ON search_cache(created);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
     url UNINDEXED,
     title,
@@ -66,6 +71,9 @@ class Cache:
         self._conn_obj: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
         self._writes_since_maintain = 0
+        # Reference to the in-flight background maintenance task (if any) so
+        # it isn't garbage-collected mid-run and never overlaps itself.
+        self._maintain_task: asyncio.Task | None = None
 
     async def _conn(self) -> aiosqlite.Connection:
         """Return the single long-lived connection, creating it once.
@@ -105,8 +113,20 @@ class Cache:
                 await conn.close()
                 raise
             self._conn_obj = conn
-            await self._maintain(conn)
+            # Maintenance runs OFF the caller's critical path: a large cache's
+            # VACUUM must never stall the first tool call of a session behind
+            # the init lock. aiosqlite serializes statements on its worker
+            # thread, so the background task can safely share the connection.
+            self._spawn_maintenance(conn)
             return conn
+
+    def _spawn_maintenance(self, conn: aiosqlite.Connection) -> None:
+        """Fire-and-forget a maintenance pass; at most one in flight."""
+        if self._maintain_task is not None and not self._maintain_task.done():
+            return
+        self._maintain_task = asyncio.get_running_loop().create_task(
+            self._maintain(conn)
+        )
 
     def _db_size(self) -> int:
         """Current on-disk footprint: main db file + WAL (best-effort)."""
@@ -163,11 +183,18 @@ class Cache:
         self._writes_since_maintain += 1
         if self._writes_since_maintain >= self._MAINTAIN_EVERY:
             self._writes_since_maintain = 0
-            await self._maintain(conn)
+            self._spawn_maintenance(conn)
 
     async def close(self) -> None:
         """Close the long-lived connection, if any. Safe to call repeatedly."""
         async with self._lock:
+            if self._maintain_task is not None and not self._maintain_task.done():
+                self._maintain_task.cancel()
+                try:
+                    await self._maintain_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._maintain_task = None
             if self._conn_obj is not None:
                 await self._conn_obj.close()
                 self._conn_obj = None
