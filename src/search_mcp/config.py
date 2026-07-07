@@ -20,9 +20,14 @@ class Settings(BaseSettings):
     #                   to attempt and falls back fast when it is
     #   * googlenews  — RSS, ~1s, gives news-skewed coverage that complements
     #                   the other two on time-sensitive queries
+    #   * bing        — www4 edge serves organic results over plain HTTP in
+    #                   ~0.3s; safe as a default now that its old built-in
+    #                   searx race moved to the aggregator rescue (a gated
+    #                   bing costs one fast HTTP attempt, same as the others)
     # Searx public instances are unreliable (often ≥10s timeouts/empties) and
-    # Startpage forces a browser render — both stay opt-in via `engines=`.
-    default_engines: list[str] = ["duckduckgo", "mojeek", "googlenews"]
+    # Startpage forces a browser render — both stay opt-in via `engines=`
+    # (searx also serves as the first rescue engine, see rescue_engines).
+    default_engines: list[str] = ["duckduckgo", "mojeek", "googlenews", "bing"]
     max_results_per_engine: int = 10
 
     # Public SearXNG instances rot constantly (DNS death, 429 walls, disabled

@@ -1,5 +1,9 @@
 # free-search-mcp
 
+<p align="center">
+  <img src="docs/search.gif" alt="free-search-mcp — one research() call returns a cited Markdown brief, no API key" width="820">
+</p>
+
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-1.2%2B-purple.svg)](https://modelcontextprotocol.io/)
@@ -165,14 +169,18 @@ elevated actions.
 
 ### Engines
 
-Default set (all-HTTP, **no browser**, ~2x faster than the old default
-that included Startpage):
-`duckduckgo`, `mojeek`, `googlenews`.
+Default set (all-HTTP, **no browser**):
+`duckduckgo`, `mojeek`, `googlenews`, `bing`.
+
+When a search comes back empty (or nearly empty with gated/erroring
+engines), the aggregator automatically runs one bounded **rescue pass**
+via `searx` → `bing` and reports it as `rescued_via` — so a CAPTCHA wall
+on the defaults degrades to slower results instead of no results.
 
 Opt-in:
 - `startpage` — browser-rendered (~5-10s/query); good for hard-to-reach
   results that the HTTP defaults miss.
-- `brave`, `bing`, `baidu` — intermittent challenges to headless clients.
+- `brave`, `baidu` — intermittent challenges to headless clients.
 - `searx` — meta-search proxy via public SearXNG instances; included for
   completeness but most public instances are slow/unreliable in 2026.
 - `google` — keyless Google web SERP scrape (HTTP first, Playwright
@@ -409,7 +417,10 @@ All settings can be overridden by environment variables prefixed with
 
 | Var | Default | Meaning |
 |---|---|---|
-| `SEARCH_MCP_DEFAULT_ENGINES` | `["duckduckgo","mojeek","googlenews"]` | JSON list |
+| `SEARCH_MCP_DEFAULT_ENGINES` | `["duckduckgo","mojeek","googlenews","bing"]` | JSON list |
+| `SEARCH_MCP_RESCUE_ENABLED` | `true` | auto-rescue empty searches via rescue engines |
+| `SEARCH_MCP_RESCUE_ENGINES` | `["searx","bing"]` | rescue order (JSON list) |
+| `SEARCH_MCP_RESCUE_TIMEOUT` | `10.0` | seconds; cap on the whole rescue pass |
 | `SEARCH_MCP_MAX_RESULTS_PER_ENGINE` | `10` | |
 | `SEARCH_MCP_RATE_LIMIT_PER_MINUTE` | `30` | per engine |
 | `SEARCH_MCP_FETCH_RATE_LIMIT_PER_MINUTE` | `20` | shared `fetch` bucket |

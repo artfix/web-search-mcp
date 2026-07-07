@@ -173,7 +173,7 @@ async def search(
 
     Args:
         query: Natural-language query (the same string a human would type).
-        engines: Subset of `engines()`. None = duckduckgo+mojeek+googlenews.
+        engines: Subset of `engines()`. None = duckduckgo+mojeek+googlenews+bing.
             (startpage is opt-in and browser-rendered.)
         max_results: Merged result count after dedup. 5-20 is the useful range.
         use_cache: Reuse the last result for this exact (query, engines,
@@ -622,12 +622,13 @@ def engines() -> list[str]:
     - Passing a key-only engine (brave_api/serper/tavily/google_cse) with no key
       configured — it returns an actionable error, not results.
 
-    Defaults: duckduckgo + mojeek + googlenews (reliable, no captchas;
-              googlenews is an RSS index with structured publish dates and its
-              URLs resolve to the real publisher on fetch/research).
+    Defaults: duckduckgo + mojeek + googlenews + bing (reliable, all-HTTP,
+              low-latency; googlenews is an RSS index with structured publish
+              dates and its URLs resolve to the real publisher on
+              fetch/research; bing's www4 edge answers in ~0.3s).
     Keyless opt-in: google + serpsearch (Google SERP scrapers, HTTP-first),
               anysearch (JSON aggregator), startpage (browser-rendered, slower),
-              brave (PoW captcha after a few calls), bing (HTTP-first), baidu
+              brave (PoW captcha after a few calls), baidu
               (CN index), bilibili (CN video), zhihu (CN Q&A, often login-gated),
               searx (public-instance meta-search; set SEARCH_MCP_SEARX_INSTANCES
               if it returns nothing).
