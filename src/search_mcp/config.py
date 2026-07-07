@@ -12,6 +12,10 @@ class Settings(BaseSettings):
 
     cache_dir: Path = DEFAULT_CACHE_DIR
     cache_ttl_seconds: int = 60 * 60 * 24 * 7
+    # Size cap on the SQLite cache file (db + WAL). Enforced opportunistically
+    # (connection init + every N writes) by dropping the oldest pages rows and
+    # vacuuming; 0 disables the cap. Expired rows are purged on the same cadence.
+    cache_max_mb: int = 512
 
     # All-HTTP, low-latency default pool. Picked for "consistently fast AND
     # consistently returns results in 2026":

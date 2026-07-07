@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import os
 import sqlite3
 import time
 from typing import Any
@@ -7,6 +9,8 @@ from typing import Any
 import aiosqlite
 
 from .config import settings
+
+log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS search_cache (
@@ -53,10 +57,15 @@ END;
 
 
 class Cache:
+    # Opportunistic maintenance cadence: once at connection init, then every
+    # N writes. No background tasks, so the stdio server lifecycle stays simple.
+    _MAINTAIN_EVERY = 200
+
     def __init__(self) -> None:
         self._path = str(settings.cache_path())
         self._conn_obj: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
+        self._writes_since_maintain = 0
 
     async def _conn(self) -> aiosqlite.Connection:
         """Return the single long-lived connection, creating it once.
@@ -96,7 +105,65 @@ class Cache:
                 await conn.close()
                 raise
             self._conn_obj = conn
+            await self._maintain(conn)
             return conn
+
+    def _db_size(self) -> int:
+        """Current on-disk footprint: main db file + WAL (best-effort)."""
+        size = 0
+        for suffix in ("", "-wal"):
+            try:
+                size += os.path.getsize(self._path + suffix)
+            except OSError:
+                pass
+        return size
+
+    async def _maintain(self, conn: aiosqlite.Connection) -> None:
+        """Purge expired rows, then enforce the size cap. Never raises.
+
+        DELETEs alone never shrink a SQLite file (freed pages go to the
+        freelist), so when the file exceeds cache_max_mb we drop the oldest
+        ``pages`` rows down to a size-proportional target and run ONE VACUUM
+        (+WAL truncate) to actually return the space. ``pages`` dominates the
+        footprint; ``search_cache`` rows are small and age out via TTL.
+        """
+        try:
+            cutoff = int(time.time()) - settings.cache_ttl_seconds
+            await conn.execute("DELETE FROM search_cache WHERE created < ?", (cutoff,))
+            await conn.execute("DELETE FROM pages WHERE fetched < ?", (cutoff,))
+            await conn.commit()
+
+            cap = settings.cache_max_mb * 1024 * 1024
+            size = self._db_size()
+            if cap <= 0 or size <= cap:
+                return
+            cur = await conn.execute("SELECT COUNT(*) FROM pages")
+            row = await cur.fetchone()
+            total = row[0] if row else 0
+            if total:
+                # Keep the newest rows that fit ~80% of the cap, assuming size
+                # scales with row count. The FTS delete-trigger keeps pages_fts
+                # in sync.
+                keep = int(total * (cap * 0.8) / size)
+                drop = max(1, total - keep)
+                await conn.execute(
+                    "DELETE FROM pages WHERE rowid IN "
+                    "(SELECT rowid FROM pages ORDER BY fetched ASC LIMIT ?)",
+                    (drop,),
+                )
+                await conn.commit()
+            await conn.execute("VACUUM")
+            await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as e:
+            # Maintenance is best-effort housekeeping — a failure (locked db,
+            # disk error) must never take down the actual read/write path.
+            log.warning("cache maintenance failed: %s", e)
+
+    async def _bump_writes(self, conn: aiosqlite.Connection) -> None:
+        self._writes_since_maintain += 1
+        if self._writes_since_maintain >= self._MAINTAIN_EVERY:
+            self._writes_since_maintain = 0
+            await self._maintain(conn)
 
     async def close(self) -> None:
         """Close the long-lived connection, if any. Safe to call repeatedly."""
@@ -129,6 +196,7 @@ class Cache:
             (key, query, ",".join(engines), json.dumps(results, ensure_ascii=False), int(time.time())),
         )
         await conn.commit()
+        await self._bump_writes(conn)
 
     async def get_page(
         self, url: str, max_age_seconds: int | None = None,
@@ -153,6 +221,7 @@ class Cache:
             (url, title or "", content, int(time.time())),
         )
         await conn.commit()
+        await self._bump_writes(conn)
 
     async def search_pages(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         conn = await self._conn()
