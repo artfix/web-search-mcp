@@ -409,6 +409,25 @@ async def aggregate_search(
         }
         payload["gated_hint"] = _gate_hint(gated, fallback)
 
+    # Engines that returned 0 raw results with no exception and no detected
+    # gate — the silent failure mode (IP block, markup drift) that otherwise
+    # leaves no trace at all. Same sparseness threshold as filter_diagnostics
+    # so a healthy response with one quiet engine stays clean.
+    if len(merged) <= 3:
+        empty = sorted(
+            name
+            for name, count in diagnostics.get("raw_per_engine", {}).items()
+            if count == 0 and name not in gated and name not in errors
+        )
+        if empty:
+            payload["empty_engines"] = empty
+            payload["empty_hint"] = (
+                f"{', '.join(empty)} returned 0 results with no error and no "
+                "CAPTCHA/consent wall detected — possible silent IP block or a "
+                "markup change. If this persists, configure a proxy (admin UI / "
+                "SEARCH_MCP_PROXY) or pick different engines via `engines=`."
+            )
+
     return payload
 
 
