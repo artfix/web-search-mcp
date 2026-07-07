@@ -233,6 +233,76 @@ def _gate_hint(gated: dict[str, str], fallback: dict[str, str]) -> str:
     )
 
 
+def _needs_rescue(
+    merged: list[dict[str, Any]], errors: dict[str, str], diagnostics: dict[str, Any]
+) -> bool:
+    """Decide whether the keyless rescue pass should run.
+
+    Triggers only when the run is empty, or nearly empty (<=2) AND
+    demonstrably unhealthy — an engine errored, hit a gate, or silently
+    returned zero. A healthy niche query that legitimately yields 1-2 results
+    must NOT trigger network work: that is the normal-path latency guarantee.
+    """
+    if not settings.rescue_enabled:
+        return False
+    if len(merged) == 0:
+        return True
+    if len(merged) > 2:
+        return False
+    raw = diagnostics.get("raw_per_engine", {})
+    return bool(errors) or bool(diagnostics.get("gated")) or any(
+        count == 0 for count in raw.values()
+    )
+
+
+async def _rescue(
+    query: str,
+    n: int,
+    filters: SearchFilters,
+    engine_names: list[str],
+    diagnostics: dict[str, Any],
+) -> list[SearchResult]:
+    """One bounded keyless recovery pass via ``settings.rescue_engines``.
+
+    Sequential, first engine that yields results wins; the whole pass is
+    capped at ``settings.rescue_timeout``. Calls the engines directly — never
+    re-enters ``aggregate_search`` — and the candidate list excludes engines
+    the caller already ran, so there is no recursion and no self-rescue.
+    Never raises.
+    """
+    candidates = [e for e in settings.rescue_engines if e not in engine_names]
+    if not candidates:
+        return []
+    attempted: list[str] = []
+    info: dict[str, Any] = {"attempted": attempted}
+    diagnostics["rescue"] = info
+
+    async def _run() -> list[SearchResult]:
+        for name in candidates:
+            attempted.append(name)
+            try:
+                engine = get_engine(name)
+            except ValueError:
+                continue
+            await search_limiter.acquire(name)
+            try:
+                results = await engine.search(query, n, filters, diagnostics=diagnostics)
+            except Exception as e:
+                log.warning("rescue engine %s failed: %s", name, e)
+                continue
+            if results:
+                info["served_by"] = name
+                info["results"] = len(results)
+                return results
+        return []
+
+    try:
+        return await asyncio.wait_for(_run(), timeout=settings.rescue_timeout)
+    except (TimeoutError, asyncio.TimeoutError):
+        info["timeout"] = True
+        return []
+
+
 def _key(query: str, engines: list[str], max_results: int, filters: SearchFilters) -> str:
     raw = json.dumps(
         {
@@ -370,6 +440,20 @@ async def aggregate_search(
 
     merged = _merge(buckets, n)
 
+    # Keyless rescue: one bounded recovery attempt when the run came back
+    # empty or nearly-empty with demonstrably unhealthy engines. Rescue
+    # results join the RRF merge (any partial default results keep their
+    # weight and attribution stays honest via each result's `engines`), and
+    # they flow into the cache write below like any other result — a repeat
+    # query within TTL should not re-pay the rescue.
+    rescued_via: str | None = None
+    if _needs_rescue(merged, errors, diagnostics):
+        rescue_bucket = await _rescue(query, n, filters, engine_names, diagnostics)
+        if rescue_bucket:
+            buckets.append(rescue_bucket)
+            merged = _merge(buckets, n)
+            rescued_via = diagnostics.get("rescue", {}).get("served_by")
+
     if use_cache and merged:
         await cache.put_search(cache_key, query, engine_names, merged)
 
@@ -381,6 +465,8 @@ async def aggregate_search(
         "lead_snippet": _lead_snippet(query, merged),
         "errors": errors or None,
     }
+    if rescued_via:
+        payload["rescued_via"] = rescued_via
 
     # Surface filter diagnostics ONLY when (a) the user actually set a filter,
     # AND (b) the final result set is sparse. Otherwise omit the field entirely

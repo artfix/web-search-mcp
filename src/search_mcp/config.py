@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     # those too.
     searx_instances: str = ""
 
+    # Aggregation-level keyless rescue. When a FRESH search comes back empty —
+    # or nearly empty while demonstrably unhealthy (engine errors, gates, or a
+    # silent zero) — the aggregator makes one bounded recovery attempt via
+    # these engines, in order, first hit wins. A healthy sparse result never
+    # triggers it, so the normal path pays nothing.
+    rescue_enabled: bool = True
+    rescue_engines: list[str] = ["searx", "bing"]
+    rescue_timeout: float = 10.0
+
     rate_limit_per_minute: int = Field(default=30, gt=0)
     fetch_rate_limit_per_minute: int = Field(default=20, gt=0)
 

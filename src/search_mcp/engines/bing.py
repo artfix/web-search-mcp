@@ -38,37 +38,24 @@ class BingEngine(Engine):
         filters: SearchFilters | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
-        """Scrape Bing (HTTP-first, browser fallback), then fall back to SearXNG
-        when the provider gated us.
+        """Scrape Bing (HTTP-first, browser render on an empty parse).
 
-        ``base.search()`` proxies the fetch (HTTP, then a Playwright render if
-        the HTTP body parsed empty) and records any gate into
-        ``diagnostics["gated"][self.name]``. An empty result set almost always
-        means a CAPTCHA/consent gate, so we recover keylessly via the SearXNG
-        meta-search (it proxies Google/Bing). Fallback results keep
-        ``engine="searx"`` for honest attribution. Never raises.
+        Under fetch_strategy="http", a www4 non-200 (captcha/throttle shell)
+        makes base._fetch RAISE instead of returning an empty body. Normalize
+        that to an empty result set — recorded as a silent zero in diagnostics
+        so the aggregator's rescue pass and empty-engine hint still see it —
+        preserving bing's documented never-raise contract. The old SearXNG
+        fallback moved to the aggregator's rescue pass.
         """
         try:
-            results = await super().search(
+            return await super().search(
                 query, max_results, filters, diagnostics=diagnostics
             )
         except Exception:
-            # Under fetch_strategy="http", a www4 non-200 (captcha/throttle shell)
-            # makes base._fetch raise instead of returning an empty body. Treat
-            # that as "gated → empty" so the SearXNG fallback below still runs and
-            # the documented never-raise contract holds for every fetch_strategy.
-            results = []
-        if results:
-            return results
-        # Empty almost always means a CAPTCHA/consent gate. Recover keyless via
-        # the working SearXNG meta-search (it proxies Google/Bing results).
-        from .searx import SearxEngine
-
-        fb = await SearxEngine().search(query, max_results, filters)
-        if fb and diagnostics is not None:
-            diagnostics.setdefault("gated", {}).setdefault(self.name, "gated")
-            diagnostics.setdefault("fallback", {})[self.name] = "searx"
-        return fb
+            if diagnostics is not None:
+                diagnostics.setdefault("raw_per_engine", {}).setdefault(self.name, 0)
+                diagnostics.setdefault("after_filter_per_engine", {}).setdefault(self.name, 0)
+            return []
 
     def build_url(
         self, query: str, max_results: int, filters: SearchFilters | None = None
