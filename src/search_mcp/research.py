@@ -101,7 +101,7 @@ async def research(
     if fetch and sources:
         urls = [s["url"] for s in sources]
         results = await _fetch_with_freshness(urls, page_max_age_seconds)
-        for src, r in zip(sources, results):
+        for src, r in zip(sources, results, strict=True):
             if isinstance(r, dict) and "error" in r:
                 docs.append({"url": src["url"], "error": r["error"]})
             else:

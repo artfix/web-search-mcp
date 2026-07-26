@@ -15,12 +15,10 @@ Covers (audit item ids in brackets):
 """
 from __future__ import annotations
 
-
 import pytest
 
 from search_mcp import config
 from search_mcp.url_safety import UnsafeURLError
-
 
 
 # --------------------------------------------------------------------------- #
@@ -634,10 +632,10 @@ _FIXTURE_HTML = """\
 
 
 def test_extract_output_stable_and_parses_once(monkeypatch):
-    from search_mcp import fetcher
-
     # load_html should be called exactly once (single parse) for the shared tree.
     import trafilatura
+
+    from search_mcp import fetcher
 
     calls = {"load": 0}
     real_load = trafilatura.load_html

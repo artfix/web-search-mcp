@@ -26,24 +26,17 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException
 
 from ..config import settings
+from ..httpfetch import IMPERSONATE
 from ..net import curl_proxy_kwargs
 from .base import (
     Engine,
     SearchFilters,
     SearchResult,
-    apply_post_filters,
-    apply_post_filters_with_diagnostics,
     augment_query_with_operators,
     extract_date_hint,
     parse_html,
     text_of,
 )
-
-
-# Pinned at chrome131 to match the rest of the project. Using a fingerprint
-# Searx instances see all day from real browsers avoids the 403/429 wall
-# vanilla httpx hits.
-_IMPERSONATE = "chrome131"
 
 # Per-instance timeout. Kept short on purpose: if one instance is slow we
 # want to fall through to the next quickly rather than blow the latency
@@ -156,7 +149,7 @@ class SearxEngine(Engine):
         url = self._instance_url(instance, query, filters)
         try:
             async with AsyncSession(
-                impersonate=_IMPERSONATE,
+                impersonate=IMPERSONATE,
                 timeout=_PER_INSTANCE_TIMEOUT,
                 allow_redirects=True,
                 headers={
@@ -175,7 +168,7 @@ class SearxEngine(Engine):
         except asyncio.CancelledError:
             # Lost the race — propagate so the gather/cancel path unwinds cleanly.
             raise
-        except (RequestException, asyncio.TimeoutError):
+        except (TimeoutError, RequestException):
             return []
         except Exception:
             return []
@@ -231,22 +224,7 @@ class SearxEngine(Engine):
         if not results and diagnostics is not None:
             diagnostics.setdefault("gated", {}).setdefault(self.name, "no_live_instance")
 
-        # We override search(), so we must call the post-filter ourselves —
-        # the base class only does it on its own code path. Mirror the base
-        # class's diagnostics contract so the aggregator's per-engine drop
-        # accounting still works.
-        if diagnostics is not None:
-            raw_count = len(results)
-            filtered, drops = apply_post_filters_with_diagnostics(results, filters)
-            diagnostics.setdefault("raw_per_engine", {})[self.name] = raw_count
-            diagnostics.setdefault("after_filter_per_engine", {})[self.name] = len(filtered)
-            agg = diagnostics.setdefault("drops_by_reason", {})
-            for reason, n in drops.items():
-                agg[reason] = agg.get(reason, 0) + n
-            results = filtered[:max_results]
-        else:
-            results = apply_post_filters(results, filters)[:max_results]
-        for i, r in enumerate(results):
-            r.rank = i + 1
-            r.engine = self.name
-        return results
+        # We override search(), so the shared tail contract (post-filter +
+        # diagnostics + rank) must be applied explicitly — see
+        # Engine.finalize_results.
+        return self.finalize_results(results, filters, max_results, diagnostics)

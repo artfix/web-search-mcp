@@ -18,7 +18,6 @@ from w3lib.html import get_base_url
 from .httpfetch import _decode_body, httpx_client_kwargs, httpx_stream_capped
 from .url_safety import assert_url_allowed_async
 
-
 _SYNTAXES = ["json-ld", "microdata", "opengraph", "rdfa", "microformat"]
 
 # Bare <meta> tag names/properties worth surfacing when no structured data

@@ -29,7 +29,7 @@ from .url_safety import assert_url_allowed_async
 
 # Match the engine fast-path: real Chrome JA3/JA4 + H2 fingerprint so target
 # sites don't see "headless client claiming to be Chrome".
-_IMPERSONATE = "chrome131"
+IMPERSONATE = "chrome131"
 
 # Cap on manually-followed redirect hops. We disable the HTTP client's
 # automatic redirect handling (which would chase a 30x straight to an
@@ -51,7 +51,7 @@ def curl_session_kwargs() -> dict[str, Any]:
     Chrome build, keeping the UA <-> JA3/H2 fingerprints consistent.
     """
     return {
-        "impersonate": _IMPERSONATE,
+        "impersonate": IMPERSONATE,
         "timeout": settings.fetch_timeout,
         # Automatic redirects are DISABLED: a 30x could otherwise jump straight
         # to an internal IP, bypassing the per-hop SSRF check in the loop.

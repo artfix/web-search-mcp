@@ -12,7 +12,6 @@ from .base import (
     text_of,
 )
 
-
 # Mojeek's `since=` (relative) uses suffix-encoded durations.
 _MOJEEK_FRESHNESS = {"day": "1d", "week": "7d", "month": "31d", "year": "365d"}
 

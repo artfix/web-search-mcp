@@ -66,7 +66,7 @@ docker compose run --rm search-mcp
 | `research(question, depth?, ...filters)` | search + fetch top N + return a Markdown brief in one call. |
 | `compare(question, urls=[2..5])` | Concurrent fetch of 2–5 URLs, side-by-side excerpts. |
 | `fetch(url, render?, ...)` | Fetch one page → reader-mode Markdown (trafilatura). |
-| `fetch_batch(urls, ...)` | Concurrent multi-URL fetch. |
+| `fetch_batch(urls, ...)` | Concurrent multi-URL fetch (max 20 per call). |
 | `read_doc(source, start?, length?, ...)` | Parse PDF / DOCX / HTML / TXT / MD with pagination. |
 | `extract_structured(url, ...)` | JSON-LD / OpenGraph / Twitter cards / microdata. |
 | `cache_search(query, limit?, ...)` | FTS5 search across previously fetched pages. |

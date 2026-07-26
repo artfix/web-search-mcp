@@ -95,8 +95,9 @@ class Cache:
             # (interpreter exit, or a test runner reusing the module singleton
             # across event loops), and a live non-daemon thread blocks process
             # shutdown forever. Mark the worker daemon BEFORE it starts so a
-            # missing close() can never hang exit. WAL durability is unaffected
-            # because every commit already fsyncs.
+            # missing close() can never hang exit. The cache holds disposable
+            # data: with WAL + synchronous=NORMAL an abrupt exit can lose the
+            # last few commits but never corrupts the file.
             worker = getattr(conn, "_thread", None)
             if worker is not None:
                 worker.daemon = True
@@ -107,6 +108,11 @@ class Cache:
                 # immediately raising 'database is locked'.
                 await conn.execute("PRAGMA journal_mode=WAL")
                 await conn.execute("PRAGMA busy_timeout=5000")
+                # NORMAL is the documented safe default under WAL: fsync at
+                # checkpoints instead of every commit, so each put_page /
+                # put_search stops paying a per-write fsync.
+                await conn.execute("PRAGMA synchronous=NORMAL")
+                await conn.execute("PRAGMA temp_store=MEMORY")
                 await conn.executescript(_SCHEMA)
                 await conn.commit()
             except BaseException:
@@ -192,7 +198,13 @@ class Cache:
                 self._maintain_task.cancel()
                 try:
                     await self._maintain_task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
+                    # Swallow only OUR cancellation of the maintenance task;
+                    # if close() itself is being cancelled the task won't have
+                    # reached the cancelled state — propagate in that case.
+                    if not self._maintain_task.cancelled():
+                        raise
+                except Exception:
                     pass
             self._maintain_task = None
             if self._conn_obj is not None:
@@ -215,12 +227,20 @@ class Cache:
             return None
         return json.loads(row[0])
 
-    async def put_search(self, key: str, query: str, engines: list[str], results: list[dict[str, Any]]) -> None:
+    async def put_search(
+        self, key: str, query: str, engines: list[str], results: list[dict[str, Any]]
+    ) -> None:
         conn = await self._conn()
         await conn.execute(
             "INSERT OR REPLACE INTO search_cache (cache_key, query, engines, results, created) "
             "VALUES (?, ?, ?, ?, ?)",
-            (key, query, ",".join(engines), json.dumps(results, ensure_ascii=False), int(time.time())),
+            (
+                key,
+                query,
+                ",".join(engines),
+                json.dumps(results, ensure_ascii=False),
+                int(time.time()),
+            ),
         )
         await conn.commit()
         await self._bump_writes(conn)

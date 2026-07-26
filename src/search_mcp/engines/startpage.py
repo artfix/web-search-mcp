@@ -12,7 +12,6 @@ from .base import (
     text_of,
 )
 
-
 # Startpage's family filter param qadf: 'heavy' enables filtering, 'none' off.
 # safesearch_param('startpage') returns '1'/'0' (binary); translate here.
 _STARTPAGE_QADF = {"1": "heavy", "0": "none"}

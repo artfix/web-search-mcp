@@ -92,7 +92,7 @@ def _invalid_fts_hint(query: str) -> str | None:
             "These join two terms, e.g. `cats AND dogs`, not `cats AND`."
         )
     # Two boolean operators in a row (e.g. `a AND OR b`).
-    for prev, cur in zip(upper, upper[1:]):
+    for prev, cur in zip(upper, upper[1:], strict=False):
         if prev in _FTS_OPERATORS and cur in _FTS_OPERATORS:
             return (
                 "Your query has two boolean operators in a row. Put a term "
@@ -102,7 +102,7 @@ def _invalid_fts_hint(query: str) -> str | None:
 
 
 async def _safe_progress(
-    ctx: "Context | None", current: float, total: float, message: str,
+    ctx: Context | None, current: float, total: float, message: str,
 ) -> None:
     """report_progress() raises 'Context is not available outside of a request'
     when called from non-MCP contexts (unit tests, ad-hoc scripts, or clients
@@ -333,12 +333,17 @@ async def fetch_batch(
       `error` field instead.
 
     Args:
-        urls: List of absolute http(s) URLs.
+        urls: List of absolute http(s) URLs (max 20 per call).
         render: Same as `fetch`.
         format: "markdown" or "json".
     """
     if not urls:
         return "" if format == "markdown" else []
+    if len(urls) > 20:
+        raise ValueError(
+            f"fetch_batch accepts at most 20 URLs per call (got {len(urls)}); "
+            "split the list across calls"
+        )
     await _safe_progress(ctx, 0.0, float(len(urls)), "starting batch fetch")
     raw = await fetch_many(urls, render=render)
     items: list[dict[str, Any]] = []
@@ -581,7 +586,10 @@ async def cache_search(
             return (
                 f"_No results — your search syntax looks invalid. {bad}_\n"
             )
-        return f"_No cached pages match `{query}`. Use `fetch` or `research` to populate the cache._\n"
+        return (
+            f"_No cached pages match `{query}`. "
+            "Use `fetch` or `research` to populate the cache._\n"
+        )
     lines = [f"# Cache hits for `{query}`", ""]
     for r in rows:
         lines.append(f"## {r.get('title') or '(untitled)'}")
@@ -847,6 +855,14 @@ def run() -> None:
         try:
             import anyio
             anyio.run(pool.shutdown)
+        except Exception:
+            pass
+        try:
+            import anyio
+            # A clean close checkpoints the WAL; without it the daemon-thread
+            # workaround in cache.py is the only thing standing between us and
+            # a hung exit.
+            anyio.run(cache.close)
         except Exception:
             pass
 

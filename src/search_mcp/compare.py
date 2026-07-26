@@ -38,7 +38,7 @@ async def compare_urls(question: str, urls: list[str]) -> dict[str, Any]:
 
     results = await fetch_many(urls)
     excerpts: list[dict[str, Any]] = []
-    for url, r in zip(urls, results):
+    for url, r in zip(urls, results, strict=True):
         if isinstance(r, dict) and "error" in r:
             excerpts.append({"url": url, "error": r["error"]})
             continue

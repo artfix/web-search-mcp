@@ -200,4 +200,4 @@ async def test_fetch_surfaces_http_error_not_install_hint(monkeypatch):
     except RequestException as e:
         assert "503" in str(e)
     except BrowserUnavailableError:
-        raise AssertionError("install hint must not mask the real HTTP error")
+        raise AssertionError("install hint must not mask the real HTTP error") from None

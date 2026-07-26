@@ -14,7 +14,7 @@ from rapidfuzz import fuzz
 from .browser import BROWSER_INSTALL_HINT
 from .cache import cache
 from .config import settings
-from .engines import ENGINES, SearchFilters, SearchResult, get_engine
+from .engines import ENGINES, Engine, SearchFilters, SearchResult, get_engine
 from .ratelimit import RateLimiter
 
 log = logging.getLogger(__name__)
@@ -72,26 +72,31 @@ def _dedup_by_title(items: list[dict]) -> list[dict]:
     noise.
     """
     keep: list[dict] = []
+    # (canonical_host, digit_tokens, lowered_title) per kept item, computed
+    # once — the inner loop otherwise re-parses every kept URL and re-scans
+    # every kept title for each new candidate (O(n²) urlparse/regex calls).
+    keep_keys: list[tuple[str, list[str], str]] = []
     for it in items:
         t = (it.get("title") or "").lower().strip()
         if not t:
             keep.append(it)
+            keep_keys.append(("", [], ""))
             continue
         host = _canonical_host(it.get("url", ""))
         t_nums = _NUM_RE.findall(t)
         is_dup = False
-        for k in keep:
-            if _canonical_host(k.get("url", "")) != host:
+        for k_host, k_nums, kt in keep_keys:
+            if not kt or k_host != host:
                 continue
-            kt = (k.get("title") or "").lower()
             # Distinct digit-tokens => distinct results; never collapse them.
-            if _NUM_RE.findall(kt) != t_nums:
+            if k_nums != t_nums:
                 continue
             if fuzz.token_set_ratio(t, kt) >= 92:
                 is_dup = True
                 break
         if not is_dup:
             keep.append(it)
+            keep_keys.append((host, t_nums, t))
     return keep
 
 
@@ -314,13 +319,17 @@ async def _rescue(
             continue
         rescue_diag: dict[str, Any] = {}
 
-        async def _one() -> list[SearchResult]:
+        async def _one(
+            name: str = name,
+            engine: Engine = engine,
+            rescue_diag: dict[str, Any] = rescue_diag,
+        ) -> list[SearchResult]:
             await search_limiter.acquire(name)
             return await engine.search(query, n, filters, diagnostics=rescue_diag)
 
         try:
             results = await asyncio.wait_for(_one(), timeout=per_candidate)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             info.setdefault("timeouts", []).append(name)
             continue
         except Exception as e:
@@ -364,7 +373,9 @@ def _merge(buckets: list[list[SearchResult]], max_results: int) -> list[dict[str
                 continue
             scores[url] = scores.get(url, 0.0) + 1.0 / (k + r.rank)
             engines_for.setdefault(url, []).append(r.engine)
-            if url not in representative or len(r.snippet) > len(representative[url].get("snippet", "")):
+            if url not in representative or len(r.snippet) > len(
+                representative[url].get("snippet", "")
+            ):
                 representative[url] = r.to_dict()
                 representative[url]["url"] = url
 

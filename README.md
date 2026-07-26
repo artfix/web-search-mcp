@@ -160,7 +160,7 @@ stripping). Each fetched page also returns `author`, `published_date`, and
 | `research(question, depth?, ...filters)` | One-shot: search + fetch top N + return Markdown brief |
 | `compare(question, urls=[2..5])` | Concurrent fetch of 2-5 URLs, side-by-side excerpts keyed by question |
 | `fetch(url, render?, ...)` | Fetch a page, return reader-mode Markdown (trafilatura, with author/date/sitename) |
-| `fetch_batch(urls, ...)` | Concurrent multi-URL fetch |
+| `fetch_batch(urls, ...)` | Concurrent multi-URL fetch (max 20 per call) |
 | `read_doc(source, start?, length?, ...)` | Parse PDF / DOCX / HTML / TXT / MD with pagination |
 | `extract_structured(url, ...)` | Pull JSON-LD / OpenGraph / Twitter cards / microdata via extruct |
 | `cache_search(query, limit?, ...)` | FTS5 search across previously fetched pages |
@@ -478,6 +478,7 @@ Available knobs:
 | Var | Default | Meaning |
 |---|---|---|
 | `SEARCH_MCP_DEFAULT_ENGINES` | `["duckduckgo","mojeek","googlenews","bing"]` | JSON list |
+| `SEARCH_MCP_SEARX_INSTANCES` | *(empty)* | pin known-good SearXNG instance URL(s), comma/space separated; overrides the built-in shortlist |
 | `SEARCH_MCP_RESCUE_ENABLED` | `true` | auto-rescue empty searches via rescue engines |
 | `SEARCH_MCP_RESCUE_ENGINES` | `["searx","bing"]` | rescue order (JSON list) |
 | `SEARCH_MCP_RESCUE_TIMEOUT` | `10.0` | seconds; cap on the whole rescue pass |
@@ -491,6 +492,7 @@ Available knobs:
 | `SEARCH_MCP_BROWSER_HEADLESS` | `true` | |
 | `SEARCH_MCP_BROWSER_POOL_SIZE` | `2` | concurrent pages |
 | `SEARCH_MCP_MAX_CONTENT_CHARS` | `50000` | per result truncation |
+| `SEARCH_MCP_USER_AGENT` | desktop Chrome UA | used by the httpx (documents) and Playwright paths; the curl_cffi path derives its UA from browser impersonation |
 
 ---
 

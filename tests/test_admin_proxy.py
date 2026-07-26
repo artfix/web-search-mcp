@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import sys
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette.testclient import TestClient
-from unittest.mock import AsyncMock
 
 from search_mcp import keystore
 from search_mcp.admin import app
@@ -40,7 +40,6 @@ def _ensure_pool_module(monkeypatch):
     """
     try:
         from search_mcp.browser import pool  # noqa: F401
-
         from search_mcp.browser import pool as real_pool
 
         return real_pool

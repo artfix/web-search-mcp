@@ -18,7 +18,7 @@ from __future__ import annotations
 import html as html_lib
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
 
@@ -43,8 +43,8 @@ def _format_pubdate(raw: str | None) -> str:
     if dt is None:
         return ""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    now = datetime.now(UTC)
     delta = now - dt
     secs = delta.total_seconds()
     if secs < 0:

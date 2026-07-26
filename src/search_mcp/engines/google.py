@@ -33,7 +33,6 @@ from .base import (
     text_of,
 )
 
-
 # Google's `tbs=qdr:<x>` time-window keys map cleanly to our freshness buckets.
 _GOOGLE_FRESHNESS = {"day": "d", "week": "w", "month": "m", "year": "y"}
 

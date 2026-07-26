@@ -39,20 +39,14 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException
 
 from ..config import settings
+from ..httpfetch import IMPERSONATE
 from ..keystore import get_secret
 from ..net import curl_proxy_kwargs
 from .base import (
     Engine,
     SearchFilters,
     SearchResult,
-    apply_post_filters,
-    apply_post_filters_with_diagnostics,
 )
-
-
-# Pinned at chrome131 to match the rest of the project — keeps the JA3/JA4 +
-# HTTP/2 fingerprint consistent with the desktop UA we present elsewhere.
-_IMPERSONATE = "chrome131"
 
 _ENDPOINT = "https://api.anysearch.com/v1/search"
 
@@ -167,7 +161,7 @@ class AnySearchEngine(Engine):
         results: list[SearchResult] = []
         try:
             async with AsyncSession(
-                impersonate=_IMPERSONATE,
+                impersonate=IMPERSONATE,
                 timeout=settings.request_timeout,
                 allow_redirects=True,
                 headers=headers,
@@ -190,22 +184,7 @@ class AnySearchEngine(Engine):
         except Exception:
             results = []
 
-        # We override search(), so we must call the post-filter ourselves — the
-        # base class only does it on its own code path. Mirror the base class's
-        # diagnostics contract so the aggregator's per-engine drop accounting
-        # still works.
-        if diagnostics is not None:
-            raw_count = len(results)
-            filtered, drops = apply_post_filters_with_diagnostics(results, filters)
-            diagnostics.setdefault("raw_per_engine", {})[self.name] = raw_count
-            diagnostics.setdefault("after_filter_per_engine", {})[self.name] = len(filtered)
-            agg = diagnostics.setdefault("drops_by_reason", {})
-            for reason, n in drops.items():
-                agg[reason] = agg.get(reason, 0) + n
-            results = filtered[:max_results]
-        else:
-            results = apply_post_filters(results, filters)[:max_results]
-        for i, r in enumerate(results):
-            r.rank = i + 1
-            r.engine = self.name
-        return results
+        # We override search(), so the shared tail contract (post-filter +
+        # diagnostics + rank) must be applied explicitly — see
+        # Engine.finalize_results.
+        return self.finalize_results(results, filters, max_results, diagnostics)

@@ -65,6 +65,7 @@ async def test_cached_search_resource_misses_raise(isolated_cache):
 
 async def test_cached_page_resource_returns_content(isolated_cache):
     from urllib.parse import quote
+
     from search_mcp.server import mcp
     url = "https://example.com/article"
     await isolated_cache.put_page(url, "Example", "Hello world body")
@@ -80,6 +81,7 @@ async def test_cached_page_resource_returns_content(isolated_cache):
 
 async def test_cached_page_resource_misses_raise(isolated_cache):
     from urllib.parse import quote
+
     from search_mcp.server import mcp
     with pytest.raises(Exception):
         await mcp.read_resource(

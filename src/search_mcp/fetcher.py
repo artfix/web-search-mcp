@@ -17,6 +17,7 @@ from .cache import cache
 from .config import settings
 from .formatting import estimate_tokens, smart_truncate
 from .gnews import is_google_news_url, resolve_google_news_url
+
 # Shared GET plumbing lives in httpfetch. The first three names are
 # re-exported for the tests that exercise them through this module
 # (fetch_safety, charset); everything else imports from httpfetch directly.
@@ -35,7 +36,10 @@ fetch_limiter = RateLimiter(settings.fetch_rate_limit_per_minute)
 
 
 # Tags that contribute no content to a reader-mode view (fallback path).
-_BOILERPLATE = ("script", "style", "noscript", "nav", "header", "footer", "form", "aside", "iframe", "svg")
+_BOILERPLATE = (
+    "script", "style", "noscript", "nav", "header",
+    "footer", "form", "aside", "iframe", "svg",
+)
 
 # Sentinel used to embed metadata JSON inside the cache `title` column without
 # touching cache.py's schema. Format:
@@ -373,10 +377,19 @@ async def fetch_page(
     )
 
 
+# The rate limiter throttles requests per minute but says nothing about how
+# many coroutines are LIVE at once — an unbounded gather over a big URL list
+# would open that many sockets/SSRF lookups simultaneously.
+_FETCH_CONCURRENCY = 8
+
+
 async def fetch_many(urls: list[str], render: str = "auto") -> list[FetchResult | dict[str, str]]:
+    sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
+
     async def one(u: str):
         try:
-            return await fetch_page(u, render=render)
+            async with sem:
+                return await fetch_page(u, render=render)
         except Exception as e:
             return {"url": u, "error": str(e)}
 

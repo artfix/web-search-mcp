@@ -5,9 +5,7 @@ goal is to verify our wiring around extruct, not extruct itself.
 """
 from __future__ import annotations
 
-
 import pytest
-
 
 _JSONLD_HTML = """\
 <!DOCTYPE html>

@@ -2,8 +2,8 @@ import asyncio
 import logging
 import random
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
@@ -361,7 +361,10 @@ class BrowserPool:
                     log.exception("context close failed")
                 self._ctx = None
             if self._playwright:
-                await self._playwright.stop()
+                try:
+                    await self._playwright.stop()
+                except Exception:
+                    log.exception("playwright stop failed")
                 self._playwright = None
             # A shutdown is the "restart" the install hint asks for — give the
             # next launch attempt a clean slate.

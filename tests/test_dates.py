@@ -10,7 +10,6 @@ from __future__ import annotations
 from search_mcp.engines import SearchFilters, SearchResult, apply_post_filters
 from search_mcp.engines.base import extract_date_hint
 
-
 # ---------------------------------------------------------------------------
 # extract_date_hint — pure helper, fully offline
 # ---------------------------------------------------------------------------

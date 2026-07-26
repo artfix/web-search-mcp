@@ -15,14 +15,12 @@ from selectolax.parser import HTMLParser
 
 from ..browser import BrowserUnavailableError, pool
 from ..config import settings
+
 # Shared with the fetch path so search and fetch traffic always present the
 # SAME browser fingerprint — a drift between the two is exactly the
 # inconsistency naive headless detection (DDG anomaly page) looks for.
-from ..httpfetch import _IMPERSONATE
+from ..httpfetch import IMPERSONATE
 from ..net import curl_proxy_kwargs
-
-
-
 
 Freshness = Literal["day", "week", "month", "year"]
 Category = Literal["news", "pdf", "github", "paper", "forum", "blog"]
@@ -358,16 +356,15 @@ def apply_post_filters_with_diagnostics(
         if filters.category == "pdf" and not _strip_query(r.url).lower().endswith(".pdf"):
             _bump("category_pdf")
             continue
-        if filters.category == "blog":
+        if filters.category == "blog" and (
             # Blog = "ordinary web page" — exclude obvious non-blog hosts.
-            if (
-                _host_matches(host, _PAPER_HOSTS)
-                or _host_matches(host, _FORUM_HOSTS)
-                or _host_matches(host, _GITHUB_HOSTS)
-                or _host_matches(host, _NEWS_HOSTS)
-            ):
-                _bump("category_blog")
-                continue
+            _host_matches(host, _PAPER_HOSTS)
+            or _host_matches(host, _FORUM_HOSTS)
+            or _host_matches(host, _GITHUB_HOSTS)
+            or _host_matches(host, _NEWS_HOSTS)
+        ):
+            _bump("category_blog")
+            continue
 
         if inc_text or exc_text:
             haystack = (r.title + " \n " + r.snippet).lower()
@@ -671,8 +668,23 @@ class Engine(abc.ABC):
             reason = detect_gate(html)
             if reason:
                 diagnostics.setdefault("gated", {}).setdefault(self.name, reason)
-        # Client-side post-filter BEFORE truncation, so we don't waste the budget
-        # on hits that the engine returned but the user excluded.
+        return self.finalize_results(results, filters, max_results, diagnostics)
+
+    def finalize_results(
+        self,
+        results: list[SearchResult],
+        filters: SearchFilters | None,
+        max_results: int,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> list[SearchResult]:
+        """Post-filter, record diagnostics, truncate, and stamp rank/engine.
+
+        Every ``search()`` implementation must end with exactly this contract —
+        the base HTML path above AND each keyed JSON engine that overrides
+        ``search()`` — so it lives in one place instead of being mirrored by
+        hand in every override. Post-filtering happens BEFORE truncation, so
+        the result budget is never wasted on hits the user excluded.
+        """
         if diagnostics is not None:
             raw_count = len(results)
             filtered, drops = apply_post_filters_with_diagnostics(results, filters)
@@ -718,7 +730,7 @@ class Engine(abc.ABC):
         # we deliberately do NOT pass our own UA here — sending a mismatched UA
         # would re-introduce the very fingerprint discrepancy DDG checks for.
         async with AsyncSession(
-            impersonate=_IMPERSONATE,
+            impersonate=IMPERSONATE,
             timeout=settings.request_timeout,
             allow_redirects=True,
             headers={

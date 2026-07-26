@@ -1,3 +1,5 @@
+from .anysearch import AnySearchEngine
+from .baidu import BaiduEngine
 from .base import (
     Engine,
     SearchFilters,
@@ -5,8 +7,6 @@ from .base import (
     apply_post_filters,
     apply_post_filters_with_diagnostics,
 )
-from .anysearch import AnySearchEngine
-from .baidu import BaiduEngine
 from .bilibili import BilibiliEngine
 from .bing import BingEngine
 from .brave import BraveEngine

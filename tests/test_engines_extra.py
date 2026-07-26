@@ -17,13 +17,11 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 from search_mcp.config import settings
 from search_mcp.engines import SearchFilters, SearchResult, get_engine
 from search_mcp.engines.base import (
     apply_post_filters_with_diagnostics,
 )
-
 
 # ---------------------------------------------------------------------------
 # #4 — browser-fallback gating on empty parse()
@@ -44,12 +42,11 @@ async def test_googlenews_empty_parse_does_not_render_browser(monkeypatch):
     assert e.supports_browser_fallback is False
 
     monkeypatch.setattr(settings, "fetch_strategy", "auto")
-    with patch.object(e, "_fetch", AsyncMock(return_value=_GN_EMPTY_RSS)):
-        with patch(
-            "search_mcp.engines.base.pool.fetch_html",
-            new=AsyncMock(return_value=("u", "<html></html>")),
-        ) as mock_fetch_html:
-            out = await e.search("anything", 10)
+    with patch.object(e, "_fetch", AsyncMock(return_value=_GN_EMPTY_RSS)), patch(
+        "search_mcp.engines.base.pool.fetch_html",
+        new=AsyncMock(return_value=("u", "<html></html>")),
+    ) as mock_fetch_html:
+        out = await e.search("anything", 10)
     assert out == []
     mock_fetch_html.assert_not_called()
 
@@ -61,12 +58,11 @@ async def test_html_engine_empty_parse_still_renders_browser(monkeypatch):
     assert e.supports_browser_fallback is True
 
     monkeypatch.setattr(settings, "fetch_strategy", "auto")
-    with patch.object(e, "_fetch", AsyncMock(return_value=_HTML_EMPTY)):
-        with patch(
-            "search_mcp.engines.base.pool.fetch_html",
-            new=AsyncMock(return_value=("u", _HTML_EMPTY)),
-        ) as mock_fetch_html:
-            await e.search("anything", 10)
+    with patch.object(e, "_fetch", AsyncMock(return_value=_HTML_EMPTY)), patch(
+        "search_mcp.engines.base.pool.fetch_html",
+        new=AsyncMock(return_value=("u", _HTML_EMPTY)),
+    ) as mock_fetch_html:
+        await e.search("anything", 10)
     mock_fetch_html.assert_called_once()
 
 

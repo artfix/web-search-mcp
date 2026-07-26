@@ -12,7 +12,6 @@ from .base import (
     text_of,
 )
 
-
 _DDG_FRESHNESS = {"day": "d", "week": "w", "month": "m", "year": "y"}
 
 

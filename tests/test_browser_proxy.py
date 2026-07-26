@@ -11,7 +11,6 @@ import pytest
 
 from search_mcp import browser, net
 
-
 # --- _launch_proxy_kwargs ----------------------------------------------------
 
 

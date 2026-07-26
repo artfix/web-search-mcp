@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import time
 from urllib.parse import urlsplit
 
 from . import config
@@ -32,9 +33,46 @@ __all__ = [
     "assert_url_allowed",
     "assert_url_allowed_async",
     "assert_ip_allowed",
+    "clear_dns_cache",
 ]
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+# A successful (host, port) validation is remembered briefly so a research()
+# call that reads N pages from one site doesn't pay a DNS round trip for every
+# page AND every redirect hop. Only SUCCESSES are cached — failures stay
+# fail-closed and are re-checked on every call. The short TTL bounds how much
+# this widens the already-documented rebinding TOCTOU window (the HTTP
+# client's connect-time DNS was never pinned to the validated addresses).
+_DNS_OK_TTL_SECONDS = 30.0
+_DNS_OK_MAX_ENTRIES = 512
+_dns_ok: dict[tuple[str, int | None], float] = {}
+
+
+def clear_dns_cache() -> None:
+    """Drop memoized validations (tests re-stub the resolver per test)."""
+    _dns_ok.clear()
+
+
+def _dns_ok_hit(host: str, port: int | None) -> bool:
+    deadline = _dns_ok.get((host, port))
+    if deadline is None:
+        return False
+    if time.monotonic() >= deadline:
+        del _dns_ok[(host, port)]
+        return False
+    return True
+
+
+def _dns_ok_store(host: str, port: int | None) -> None:
+    if len(_dns_ok) >= _DNS_OK_MAX_ENTRIES:
+        now = time.monotonic()
+        for k in [k for k, dl in _dns_ok.items() if dl <= now]:
+            del _dns_ok[k]
+        if len(_dns_ok) >= _DNS_OK_MAX_ENTRIES:
+            # Purely an optimization — dropping it entirely is always safe.
+            _dns_ok.clear()
+    _dns_ok[(host, port)] = time.monotonic() + _DNS_OK_TTL_SECONDS
 
 
 class UnsafeURLError(ValueError):
@@ -166,6 +204,8 @@ def assert_url_allowed(url: str) -> str:
     if pending is None:
         return url
     host, port = pending
+    if _dns_ok_hit(host, port):
+        return url
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
@@ -173,6 +213,7 @@ def assert_url_allowed(url: str) -> str:
             f"Could not resolve host {host!r}: {exc}. Refusing to connect."
         ) from exc
     _check_resolved(host, infos)
+    _dns_ok_store(host, port)
     return url
 
 
@@ -184,6 +225,8 @@ async def assert_url_allowed_async(url: str) -> str:
     if pending is None:
         return url
     host, port = pending
+    if _dns_ok_hit(host, port):
+        return url
     loop = asyncio.get_running_loop()
     try:
         infos = await loop.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
@@ -192,4 +235,5 @@ async def assert_url_allowed_async(url: str) -> str:
             f"Could not resolve host {host!r}: {exc}. Refusing to connect."
         ) from exc
     _check_resolved(host, infos)
+    _dns_ok_store(host, port)
     return url

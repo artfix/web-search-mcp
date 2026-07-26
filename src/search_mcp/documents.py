@@ -13,8 +13,8 @@ from markdownify import markdownify as html_to_md
 from pypdf import PdfReader
 
 from .config import settings
-from .httpfetch import httpx_client_kwargs, httpx_stream_capped
 from .formatting import estimate_tokens, smart_truncate
+from .httpfetch import httpx_client_kwargs, httpx_stream_capped
 from .url_safety import assert_url_allowed_async
 
 log = logging.getLogger(__name__)

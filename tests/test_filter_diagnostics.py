@@ -18,7 +18,6 @@ from search_mcp.engines import (
 )
 from search_mcp.formatting import render_search
 
-
 # ---------------------------------------------------------------------------
 # apply_post_filters_with_diagnostics — pure helper
 # ---------------------------------------------------------------------------

@@ -54,6 +54,17 @@ def _hermetic_dns(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_dns_ok_cache():
+    """The SSRF guard memoizes successful (host, port) validations for a short
+    TTL. Tests re-stub the resolver per test, so a memo carried across tests
+    would leak the previous stub's verdict into the next test."""
+    from search_mcp.url_safety import clear_dns_cache
+    clear_dns_cache()
+    yield
+    clear_dns_cache()
+
+
+@pytest.fixture(autouse=True)
 def _disable_rescue(monkeypatch):
     """The offline suite must never hit the network. The aggregation-level
     rescue (searx/bing) fires whenever a test stubs an engine into returning

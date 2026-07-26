@@ -12,8 +12,8 @@ skip_offline = pytest.mark.skipif(not NETWORK, reason="set SEARCH_MCP_TEST_NETWO
 async def test_imports():
     from search_mcp import server  # noqa: F401
     from search_mcp.aggregator import aggregate_search  # noqa: F401
-    from search_mcp.fetcher import fetch_page  # noqa: F401
     from search_mcp.documents import read_document  # noqa: F401
+    from search_mcp.fetcher import fetch_page  # noqa: F401
 
 
 @skip_offline

@@ -28,7 +28,7 @@ import html as html_lib
 import json
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import quote_plus
 
 from curl_cffi.requests import AsyncSession
@@ -37,7 +37,6 @@ from curl_cffi.requests.exceptions import RequestException
 from ..config import settings
 from ..net import curl_proxy_kwargs
 from .base import Engine, SearchFilters, SearchResult
-
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -62,7 +61,7 @@ def _format_pubdate(pubdate: object) -> str:
     except (TypeError, ValueError):
         return ""
     try:
-        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
     except (OverflowError, OSError, ValueError):
         return ""
 

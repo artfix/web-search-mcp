@@ -10,7 +10,6 @@ from .base import (
     text_of,
 )
 
-
 # Baidu's `gpc=stf=<from>,<to>|stftype=1` for explicit ranges, but the simpler
 # documented `gpc` time-window keys map cleanly to LLM freshness buckets.
 # We rely on inline operators + client-side post-filter for everything else.

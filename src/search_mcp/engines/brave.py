@@ -12,7 +12,6 @@ from .base import (
     text_of,
 )
 
-
 # Brave's `tf=` (time filter) parameter values for the public search UI.
 _BRAVE_FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
 

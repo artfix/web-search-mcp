@@ -81,7 +81,7 @@ def _wire(monkeypatch, engines: dict[str, _StubEngine]) -> _StubCache:
         try:
             return engines[name]
         except KeyError:
-            raise ValueError(f"unknown engine: {name}")
+            raise ValueError(f"unknown engine: {name}") from None
 
     monkeypatch.setattr("search_mcp.aggregator.get_engine", _get)
     stub_cache = _StubCache()

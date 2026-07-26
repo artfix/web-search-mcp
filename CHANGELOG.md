@@ -4,6 +4,60 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 semantic versioning.
 
+## [0.4.2] - 2026-07-26
+
+Hardening + hygiene pass: packaging correctness, stricter lint, lifecycle
+cleanup, and de-duplicated engine plumbing. No tool-facing behavior changes
+except a documented cap on `fetch_batch`.
+
+### Fixed
+
+- **sdist no longer sweeps the whole working tree.** An explicit
+  `[tool.hatch.build.targets.sdist]` include list (plus a `.gitignore` entry
+  for the local `freesearch-promo/` video project) shrinks the sdist from
+  ~209 MB — which PyPI would reject — to ~300 KB.
+- `__version__` now reads the installed distribution's version via
+  `importlib.metadata` instead of a hardcoded string that had gone stale at
+  `0.2.0`.
+- `starlette` and `uvicorn` are declared as direct dependencies (admin UI
+  imports them directly; previously they arrived only transitively via
+  `mcp[cli]`). Dropped the never-imported `playwright-stealth`.
+- `run()` now closes the SQLite cache on shutdown (clean WAL checkpoint);
+  `cache.close()` no longer swallows the caller's own cancellation; a failing
+  `playwright.stop()` can no longer abort browser-pool shutdown midway.
+- Rescue-path closures bind their loop variables explicitly (`B023`) — safe
+  today, but one refactor away from every candidate using the last engine's
+  binding.
+
+### Changed
+
+- **Ruff ruleset tightened** (`E,F,W,I,B,UP,ASYNC,SIM,C4,RET`, line length
+  100) and the whole tree brought clean under it; CI now enforces it.
+- **Engine tail contract unified.** The post-filter + diagnostics + rank
+  stamping every keyed engine mirrored by hand (~22 lines × 6 engines) moved
+  into `Engine.finalize_results`. The `chrome131` impersonation constant is
+  now imported from `httpfetch.IMPERSONATE` everywhere instead of being
+  redeclared in 8 modules.
+- `fetch_batch` documents and enforces a 20-URL cap, and `fetch_many` bounds
+  live coroutines with a semaphore (8) — the rate limiter throttled requests
+  per minute but not simultaneous sockets.
+- SQLite cache uses `synchronous=NORMAL` + `temp_store=MEMORY` under WAL —
+  drops one fsync per cached write; an abrupt exit can lose the last few
+  cache writes but never corrupts the file.
+
+### Added
+
+- **Golden-HTML `parse()` tests for `duckduckgo`, `mojeek`, `bing`** — three
+  of the four default engines previously had no markup-drift coverage, which
+  is this project's most likely silent failure mode.
+- Short-TTL (30 s) memo of successful SSRF DNS validations — a `research()`
+  call reading N pages from one host no longer pays a DNS round trip per page
+  and per redirect hop.
+- `_dedup_by_title` precomputes per-item host/digit keys instead of re-parsing
+  every kept URL for every candidate.
+- `.env.example` / README now document `SEARCH_MCP_SEARX_INSTANCES`,
+  `SEARCH_MCP_USER_AGENT`, and `SEARCH_MCP_ADMIN_NO_BROWSER`.
+
 ## [0.4.1] - 2026-07-08
 
 First release actually on PyPI.

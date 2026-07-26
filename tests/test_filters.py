@@ -349,6 +349,7 @@ async def test_live_category_pdf_returns_pdf_url():
     test_post_filter_category_pdf_strips_query_string.
     """
     import pytest
+
     from search_mcp.aggregator import aggregate_search
 
     out = await aggregate_search(

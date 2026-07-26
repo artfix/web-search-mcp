@@ -28,7 +28,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-
 # --- paths ------------------------------------------------------------------
 
 
@@ -222,7 +221,8 @@ PROVIDERS: list[Provider] = [
         how_to=[
             "Open https://brave.com/search/api/ and click 'Get started'.",
             "Sign up / log in and verify your email.",
-            "Subscribe to the free 'Data for Search' plan (a card may be required, but the free tier isn't charged).",
+            "Subscribe to the free 'Data for Search' plan "
+            "(a card may be required, but the free tier isn't charged).",
             "Open the dashboard → API Keys → copy your subscription token.",
         ],
         docs_url="https://api-dashboard.search.brave.com/app/documentation",
@@ -261,15 +261,21 @@ PROVIDERS: list[Provider] = [
         engine="google_cse",
         fields=[
             ProviderField("google_cse_api_key", "API key", placeholder="AIza…"),
-            ProviderField("google_cse_cx", "Search engine ID (cx)", secret=False, placeholder="0123…:abcd"),
+            ProviderField(
+                "google_cse_cx", "Search engine ID (cx)", secret=False, placeholder="0123…:abcd"
+            ),
         ],
         signup_url="https://programmablesearchengine.google.com/",
         free_tier="100 queries/day free",
         how_to=[
-            "Create an API key: https://console.cloud.google.com/apis/credentials → 'Create credentials' → 'API key'.",
-            "Enable the 'Custom Search API' for that project: https://console.cloud.google.com/apis/library/customsearch.googleapis.com.",
-            "Create a search engine at https://programmablesearchengine.google.com/ → set it to 'Search the entire web'.",
-            "Copy the 'Search engine ID' (cx) from its control panel. Paste both the API key and the cx here.",
+            "Create an API key: https://console.cloud.google.com/apis/credentials "
+            "→ 'Create credentials' → 'API key'.",
+            "Enable the 'Custom Search API' for that project: "
+            "https://console.cloud.google.com/apis/library/customsearch.googleapis.com.",
+            "Create a search engine at https://programmablesearchengine.google.com/ "
+            "→ set it to 'Search the entire web'.",
+            "Copy the 'Search engine ID' (cx) from its control panel. "
+            "Paste both the API key and the cx here.",
         ],
         docs_url="https://developers.google.com/custom-search/v1/overview",
     ),
@@ -277,7 +283,14 @@ PROVIDERS: list[Provider] = [
         id="anysearch",
         label="AnySearch (optional key)",
         engine="anysearch",
-        fields=[ProviderField("anysearch_api_key", "API key (optional)", required=False, placeholder="leave blank for anonymous")],
+        fields=[
+            ProviderField(
+                "anysearch_api_key",
+                "API key (optional)",
+                required=False,
+                placeholder="leave blank for anonymous",
+            )
+        ],
         signup_url="https://anysearch.com/console/api-keys",
         free_tier="works keyless; a key raises the rate limit/quota",
         how_to=[

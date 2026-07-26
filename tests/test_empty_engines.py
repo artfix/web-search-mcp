@@ -58,7 +58,7 @@ def _stub_registry(monkeypatch, engines: dict[str, _StubEngine]) -> None:
         try:
             return engines[name]
         except KeyError:
-            raise ValueError(f"unknown engine: {name}")
+            raise ValueError(f"unknown engine: {name}") from None
 
     monkeypatch.setattr("search_mcp.aggregator.get_engine", _get)
 

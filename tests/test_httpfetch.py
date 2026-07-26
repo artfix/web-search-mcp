@@ -8,7 +8,6 @@ documents' strict mode and structured's keep-the-shell mode.
 
 from __future__ import annotations
 
-
 import pytest
 
 from search_mcp.httpfetch import httpx_stream_capped

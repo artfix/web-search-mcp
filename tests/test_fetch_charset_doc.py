@@ -13,7 +13,6 @@ from search_mcp.fetcher import (
     _is_document_url,
 )
 
-
 # --- charset decode --------------------------------------------------------
 
 
@@ -51,7 +50,7 @@ def test_decode_defaults_to_utf8_and_never_raises_on_bad_codec():
 def test_is_document_url_matches_pdf_and_docx_suffixes():
     assert _is_document_url("https://arxiv.org/pdf/1706.03762.pdf")
     assert _is_document_url("https://example.com/report.docx")
-    assert _is_document_url("https://example.com/paper.PDF?download=1".split("?")[0])
+    assert _is_document_url(["https://example.com/paper.PDF", "download=1"][0])
     assert not _is_document_url("https://example.com/article.html")
     assert not _is_document_url("https://example.com/")
 

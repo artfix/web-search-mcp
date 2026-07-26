@@ -1,6 +1,6 @@
 [project]
 name = "free-search-mcp"
-version = "0.4.1"
+version = "0.4.2"
 description = "Local-first, no-API-key search MCP server. Multi-engine web search, smart fetching, document reading."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,7 +32,6 @@ dependencies = [
     "curl-cffi>=0.7",
     "selectolax>=0.3.21",
     "playwright>=1.47",
-    "playwright-stealth>=1.0.6",
     "pypdf>=5.0",
     "python-docx>=1.1",
     "markdownify>=0.13",
@@ -46,6 +45,10 @@ dependencies = [
     # Imported directly (structured.py: w3lib.html.get_base_url), not just a
     # transitive dep of extruct — declare it so a future extruct can't break us.
     "w3lib>=2.0",
+    # Imported directly by admin.py; today they arrive transitively via mcp[cli],
+    # but the search-mcp-admin entry point must not depend on mcp's extras.
+    "starlette>=0.40",
+    "uvicorn>=0.30",
 ]
 
 [project.urls]
@@ -69,6 +72,42 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/search_mcp"]
+
+# Without an explicit include list hatchling sweeps the whole tree into the
+# sdist — including untracked local dirs like freesearch-promo/node_modules.
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/search_mcp",
+    "tests",
+    "docs",
+    "scripts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pytest.ini",
+    "docker-compose.yml",
+    "Dockerfile",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "SIM", "C4", "RET"]
+ignore = [
+    # Long URLs / golden HTML fixtures make strict line-length noisy in tests.
+    "SIM105",  # try/except/pass is often clearer than contextlib.suppress here
+    "RET504",  # named return values document intent in the parsers
+]
+
+[tool.ruff.lint.per-file-ignores]
+# E501: long URLs / golden HTML fixtures; B017: "raises anything" is the
+# intended assertion for cache-miss resources.
+"tests/*" = ["E501", "B017"]
+# Long lines live inside embedded HTML/CSS/JS template strings where a noqa
+# comment would leak into the rendered page.
+"src/search_mcp/admin.py" = ["E501"]
 
 [dependency-groups]
 dev = [

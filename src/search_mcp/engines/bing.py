@@ -13,9 +13,13 @@ from .base import (
     text_of,
 )
 
-
 # Bing's documented freshness filter values.
-_BING_FRESHNESS = {"day": "ex1:\"ez1\"", "week": "ex1:\"ez2\"", "month": "ex1:\"ez3\"", "year": "ex1:\"ez4\""}
+_BING_FRESHNESS = {
+    "day": 'ex1:"ez1"',
+    "week": 'ex1:"ez2"',
+    "month": 'ex1:"ez3"',
+    "year": 'ex1:"ez4"',
+}
 
 
 class BingEngine(Engine):

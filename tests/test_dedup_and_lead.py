@@ -17,7 +17,6 @@ from search_mcp.aggregator import (
 from search_mcp.engines import SearchResult
 from search_mcp.formatting import render_search
 
-
 # ---------------------------------------------------------------------------
 # _canonical_host
 # ---------------------------------------------------------------------------

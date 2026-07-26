@@ -30,11 +30,11 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException
 
 from .config import settings
+from .httpfetch import IMPERSONATE
 from .net import curl_proxy_kwargs
 
 log = logging.getLogger(__name__)
 
-_IMPERSONATE = "chrome131"
 _BATCHEXECUTE = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
 
 # Signature / timestamp / id are emitted as attributes on a <c-wiz> in the
@@ -129,7 +129,7 @@ _GARTURL_RE = re.compile(r'garturlres\\?",\\?"\s*(https?://[^"\\]+)')
 async def _resolve(url: str) -> str | None:
     try:
         async with AsyncSession(
-            impersonate=_IMPERSONATE,
+            impersonate=IMPERSONATE,
             timeout=settings.request_timeout,
             allow_redirects=True,
             headers={"Accept-Language": settings.accept_language},
@@ -152,7 +152,7 @@ async def _resolve(url: str) -> str | None:
             if resp.status_code != 200:
                 return None
             return _parse_batchexecute(resp.text)
-    except (RequestException, asyncio.TimeoutError):
+    except (TimeoutError, RequestException):
         return None
     except Exception as e:  # never-raise contract
         log.debug("google news resolve failed for %s: %s", url, e)
