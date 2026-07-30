@@ -23,6 +23,36 @@ engine simply yields no results — and tells you *why* (see Gate Diagnostics
 below). The supported, ToS-friendly fixes are a **proxy** and the **SearXNG
 fallback**, described next.
 
+### Three non-gate reasons an engine can come back empty
+
+Not every empty engine is being blocked. Before reaching for a proxy, check
+which of these applies:
+
+- **Rate-limit skip.** Some sources publish a stricter limit than our default
+  (GDELT asks for roughly one request every few seconds). Those engines are
+  **skipped** when their token bucket is empty rather than queued, because
+  search runs as a parallel fan-out and waiting would add that delay to every
+  *other* engine's results. The skip is reported in the run's diagnostics
+  under `rate_limited`. Search again in a moment and it participates.
+- **A keyed engine with no key.** These now raise an actionable error naming
+  the missing setting instead of returning an empty list — an empty list was
+  indistinguishable from "nothing matched". `github_code` is the common case:
+  GitHub rejects anonymous code search, so it needs a token, while the keyless
+  `github` engine covers repositories and issues without one.
+- **The engine simply doesn't cover the query.** Vertical sources only index
+  their own domain — asking `arxiv` about a restaurant returns nothing, and
+  that is correct behaviour, not a failure. Use `category=` and let the
+  aggregator pick the sources, rather than naming engines by hand.
+
+### The inverse gate: APIs that reject browsers
+
+Most scrapers need to look like Chrome to get past a bot wall. A few JSON APIs
+do the exact opposite and **reject** clients presenting a browser TLS/header
+fingerprint — Zenodo answers `403` to one. Those engines opt out of
+impersonation and send an honest, contactable `User-Agent` instead. If you add
+an engine for a JSON API and get a `403` that a plain `curl` doesn't, this is
+almost certainly why.
+
 ## 2. Proxy — the real fix for IP gating
 
 The most reliable way to stop datacenter-IP gating is to route outbound

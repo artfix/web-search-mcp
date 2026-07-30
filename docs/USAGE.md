@@ -65,12 +65,13 @@ docker compose run --rm search-mcp
 | `search(query, engines?, max_results?, ...filters)` | Parallel multi-engine search, RRF-merged + deduped, optional `lead_snippet`. |
 | `research(question, depth?, ...filters)` | search + fetch top N + return a Markdown brief in one call. |
 | `compare(question, urls=[2..5])` | Concurrent fetch of 2–5 URLs, side-by-side excerpts. |
-| `fetch(url, render?, ...)` | Fetch one page → reader-mode Markdown (trafilatura). |
+| `fetch(url, render?, inline?, ...)` | Fetch any resource: reader-mode Markdown for pages, parsed text for documents, or a description (type/size/dimensions/sha256) for images and binaries. `inline=True` returns the image itself for a vision model. |
 | `fetch_batch(urls, ...)` | Concurrent multi-URL fetch (max 20 per call). |
-| `read_doc(source, start?, length?, ...)` | Parse PDF / DOCX / HTML / TXT / MD with pagination. |
+| `read_doc(source, start?, length?, ...)` | Parse PDF / DOCX / XLSX / PPTX / EPUB / CSV / source code / zip-tar / HTML / TXT / MD with pagination. |
 | `extract_structured(url, ...)` | JSON-LD / OpenGraph / Twitter cards / microdata. |
 | `cache_search(query, limit?, ...)` | FTS5 search across previously fetched pages. |
 | `engines()` | List engine names accepted by `engines=`. |
+| `download(url, ...)` | Save a file to disk. **Off by default** — asks permission on first use; files auto-delete after 24h. |
 
 All tools default to `format="markdown"`; pass `format="json"` for structured
 output.
@@ -186,7 +187,7 @@ when an engine was gated. See **[PROXY_AND_GATES.md](PROXY_AND_GATES.md)**.
 | `freshness` | `day` / `week` / `month` / `year` | only results from the last N |
 | `include_domains` | `["python.org"]` | restrict to these domains |
 | `exclude_domains` | `["pinterest.com"]` | remove these |
-| `category` | `news` / `pdf` / `github` / `paper` / `forum` / `blog` | content-type shortcut |
+| `category` | `news` / `pdf` / `github` / `paper` / `forum` / `blog` / `image` / `dataset` | content-type shortcut **and** routing signal — sends the query to sources that natively index it (see [Vertical sources](#vertical-sources--selected-automatically-by-category)) |
 | `include_text` | `"async"` | substring required in title/snippet |
 | `exclude_text` | `"beginner"` | substring forbidden |
 | `max_age_hours` | `24` | override the 7-day cache TTL on this call |
@@ -213,6 +214,13 @@ Copy `.env.example` → `.env` and edit. Every knob is an env var prefixed with
 | `SEARCH_MCP_SAFESEARCH` | `moderate` | `strict` / `moderate` / `off` |
 | `SEARCH_MCP_REGION` | `us-en` | `cc-lang` token |
 | `SEARCH_MCP_CACHE_TTL_SECONDS` | `604800` | 7 days |
+| `SEARCH_MCP_CATEGORY_ENGINE_LIMIT` | `3` | how many category-native engines `category=` may add |
+| `SEARCH_MCP_CONTACT_EMAIL` | *(empty)* | optional; OpenAlex/Crossref/NCBI route identified callers to a faster pool |
+| `SEARCH_MCP_DOWNLOAD_DIR` | *(unset)* | **unset disables `download`.** Set a directory to allow it without prompting |
+| `SEARCH_MCP_DOWNLOAD_TTL_HOURS` | `24` | downloaded files are deleted after this; `0` keeps them forever |
+| `SEARCH_MCP_DOWNLOAD_MAX_MB` | `100` | refuse to save anything larger |
+| `SEARCH_MCP_TRANSPORT` | `stdio` | `stdio` / `streamable-http` |
+| `SEARCH_MCP_HTTP_HOST` / `_PORT` / `_PATH` | `127.0.0.1` / `8000` / `/mcp` | streamable-http bind settings |
 
 ---
 
