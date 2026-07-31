@@ -111,8 +111,11 @@ jobs:
           validate_dist_artifacts() {
             local name
             local -a actual wanted
+            # `uv build` drops its own .gitignore into the output directory;
+            # only the distributions themselves are release artifacts.
             mapfile -t actual < <(
-              find dist -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort
+              find dist -mindepth 1 -maxdepth 1 ! -name '.*' -printf '%f\n' \
+                | LC_ALL=C sort
             )
             mapfile -t wanted < <(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)
             if [[ "${#actual[@]}" -ne "${#wanted[@]}" ]] || \
