@@ -191,36 +191,48 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          metadata_file="$(mktemp)"
-          http_status="$(curl --silent --show-error --retry 3 \
-            --output "$metadata_file" --write-out '%{http_code}' \
-            "https://pypi.org/pypi/free-search-mcp/$VERSION/json")"
-          if [[ "$http_status" == "404" ]]; then
-            exit 0
-          fi
+          # The simple index — not the JSON API — is what `skip-existing`
+          # effectively consults, and it is updated as part of the upload
+          # rather than by a separate indexer. The JSON API can still 404 for
+          # minutes after a successful publish, which would silently turn this
+          # gate into a no-op on exactly the rerun it exists to protect.
+          index_file="$(mktemp)"
+          http_status="$(curl --silent --show-error --retry 3 --location \
+            --header 'Accept: application/vnd.pypi.simple.v1+json' \
+            --output "$index_file" --write-out '%{http_code}' \
+            "https://pypi.org/simple/free-search-mcp/")"
           if [[ "$http_status" != "200" ]]; then
-            echo "PyPI metadata request failed with HTTP $http_status" >&2
+            echo "PyPI simple index request failed with HTTP $http_status" >&2
             exit 1
           fi
-          python3 - "$metadata_file" dist <<'PY'
+          python3 - "$index_file" dist "$VERSION" <<'PY'
           import hashlib
           import json
           import sys
           from pathlib import Path
 
-          metadata = json.loads(Path(sys.argv[1]).read_text())
+          index, dist, version = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
           artifacts = {
               path.name: path
-              for path in Path(sys.argv[2]).iterdir()
+              for path in dist.iterdir()
               if path.is_file() and not path.name.startswith(".")
           }
-          remote_files = {item["filename"]: item for item in metadata["urls"]}
-          if set(remote_files) != set(artifacts):
-              raise SystemExit("PyPI and GitHub release filenames differ")
-          for filename, path in artifacts.items():
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              if digest != remote_files[filename]["digests"]["sha256"]:
+          published = {
+              entry["filename"]: entry["hashes"].get("sha256")
+              for entry in json.loads(Path(index).read_text())["files"]
+              if entry["filename"] in artifacts
+          }
+          if not published:
+              raise SystemExit(0)  # nothing uploaded yet; publishing is a no-op
+          for filename, expected in sorted(published.items()):
+              if not expected:
+                  raise SystemExit(f"PyPI publishes no sha256 for {filename}")
+              digest = hashlib.sha256(artifacts[filename].read_bytes()).hexdigest()
+              if digest != expected:
                   raise SystemExit(f"PyPI file {filename} differs from GitHub asset")
+          missing = sorted(set(artifacts) - set(published))
+          if missing:
+              print(f"partial upload detected; will publish: {', '.join(missing)}")
           PY
 
       - name: Publish to PyPI
