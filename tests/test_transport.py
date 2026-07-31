@@ -34,6 +34,7 @@ def captured_run(monkeypatch):
 
     monkeypatch.setattr(server_mod.pool, "shutdown", _noop)
     monkeypatch.setattr(server_mod.cache, "close", _noop)
+    monkeypatch.setattr(server_mod.downloads, "purge_expired", lambda: 0)
     return calls
 
 

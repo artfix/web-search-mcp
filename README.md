@@ -167,7 +167,7 @@ sources that natively index it — see [Vertical sources](#vertical-sources-sele
 | `extract_structured(url, ...)` | Pull JSON-LD / OpenGraph / Twitter cards / microdata via extruct |
 | `cache_search(query, limit?, ...)` | FTS5 search across previously fetched pages |
 | `engines()` | List engine names available to `search` |
-| `download(url, ...)` | Save a file to disk. **Disabled by default** — asks permission on first use, and files auto-delete after 24h |
+| `download(url, ...)` | Save a file to `${SEARCH_MCP_CACHE_DIR}/downloads` by default; files auto-delete after 24h. Set `SEARCH_MCP_DOWNLOAD_ENABLED=false` to disable it. |
 
 Plus **4 MCP prompts** (`Research thoroughly`, `Fact-check claim`,
 `Compare sources`, `News brief`) and **2 resource templates**
@@ -549,9 +549,10 @@ Available knobs:
 | `SEARCH_MCP_BROWSER_POOL_SIZE` | `2` | concurrent pages |
 | `SEARCH_MCP_MAX_CONTENT_CHARS` | `50000` | per result truncation |
 | `SEARCH_MCP_USER_AGENT` | desktop Chrome UA | used by the httpx (documents) and Playwright paths; the curl_cffi path derives its UA from browser impersonation |
-| `SEARCH_MCP_DOWNLOAD_DIR` | *(unset)* | **unset disables downloads.** Set a directory to allow `download` without prompting |
+| `SEARCH_MCP_DOWNLOAD_ENABLED` | `true` | set `false` to disable local file downloads |
+| `SEARCH_MCP_DOWNLOAD_DIR` | `${SEARCH_MCP_CACHE_DIR}/downloads` | optional directory override; unset or blank uses the dynamic default (`/data/downloads` in Docker) |
 | `SEARCH_MCP_DOWNLOAD_TTL_HOURS` | `24` | downloaded files are deleted after this; `0` keeps them forever |
-| `SEARCH_MCP_DOWNLOAD_MAX_MB` | `100` | refuse to save anything larger |
+| `SEARCH_MCP_DOWNLOAD_MAX_MB` | `100` | second-layer save cap; effective remote cap is the smaller of this and `SEARCH_MCP_MAX_RESPONSE_BYTES` (25,000,000 bytes by default) |
 | `SEARCH_MCP_CATEGORY_ENGINE_LIMIT` | `3` | how many category-native engines `category=` may add |
 | `SEARCH_MCP_CONTACT_EMAIL` | *(empty)* | optional; routes OpenAlex/Crossref/NCBI into their faster identified-caller pools |
 | `SEARCH_MCP_TRANSPORT` | `stdio` | `stdio` / `streamable-http` |

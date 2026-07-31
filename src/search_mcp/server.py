@@ -11,7 +11,6 @@ from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, Field
 
 from . import __version__, downloads
 from .aggregator import aggregate_search, list_engines
@@ -824,21 +823,10 @@ async def extract_structured(
     return _maybe_render(payload, format, render_structured)
 
 
-class _EnableDownloads(BaseModel):
-    """Elicitation schema for the download opt-in (primitives only, per spec)."""
-
-    enable: bool = Field(
-        description=(
-            "Save downloaded files to disk for this session? Files are deleted "
-            "automatically after the retention window."
-        )
-    )
-
-
 @mcp.tool(
     title="Download a file to disk",
     annotations=ToolAnnotations(
-        # The one tool here that writes outside the cache.
+        # The one tool here that creates a caller-visible local file.
         read_only_hint=False,
         idempotent_hint=True,
         open_world_hint=True,
@@ -846,14 +834,13 @@ class _EnableDownloads(BaseModel):
 )
 async def download(
     url: str,
-    ctx: Context | None = None,
     format: Format = "markdown",
 ) -> str | dict[str, Any]:
     """Save a file from a URL to a local, auto-expiring download directory.
 
-    Downloads are DISABLED by default. The first call asks you to turn them on
-    for this session; answering no cancels the download and writes nothing.
-    To enable permanently, set `SEARCH_MCP_DOWNLOAD_DIR`.
+    Downloads are enabled by default and saved under
+    `SEARCH_MCP_CACHE_DIR/downloads`. Set `SEARCH_MCP_DOWNLOAD_ENABLED=false`
+    to disable them or `SEARCH_MCP_DOWNLOAD_DIR` to override the destination.
 
     Best for:
     - Keeping an actual file (installer, dataset, archive, image) rather than
@@ -869,52 +856,25 @@ async def download(
     Returns:
     - markdown (default): where the file was saved, its size and type.
     - json: {url, saved_path, media_type, bytes_size, sha256, expires_in_hours}.
+      An expires_in_hours value of 0 means TTL cleanup is disabled.
 
     Retention: files older than SEARCH_MCP_DOWNLOAD_TTL_HOURS (default 24) are
-    deleted before the next download and at startup. Treat the path as
-    short-lived; copy it elsewhere if you need to keep it.
+    deleted before the next download and at startup. A value of 0 disables TTL
+    cleanup. Otherwise, treat the path as short-lived and copy it elsewhere if
+    you need to keep it.
 
     Args:
         url: Absolute http(s) URL of the file to save.
         format: "markdown" or "json".
     """
-    if not downloads.is_enabled():
-        # Ask rather than assume. Under 2026-07-28 this rides the multi
-        # round-trip pattern; the SDK handles both protocol eras.
-        if ctx is None:
-            raise PermissionError(
-                "Downloads are disabled and this client cannot be prompted. "
-                "Set SEARCH_MCP_DOWNLOAD_DIR to a directory to enable them."
-            )
-        target = downloads.default_download_dir()
-        try:
-            answer = await ctx.elicit(
-                f"Allow search-mcp to save downloaded files to {target}? "
-                f"Files are deleted automatically after "
-                f"{settings.download_ttl_hours}h. This applies to this session "
-                f"only; set SEARCH_MCP_DOWNLOAD_DIR to make it permanent.",
-                _EnableDownloads,
-            )
-        except Exception as exc:
-            raise PermissionError(
-                "Downloads are disabled and this client does not support "
-                "prompting for permission. Set SEARCH_MCP_DOWNLOAD_DIR to a "
-                f"directory to enable them. ({exc})"
-            ) from exc
-        if answer.action != "accept" or not getattr(answer.data, "enable", False):
-            raise PermissionError(
-                "Download cancelled: permission to write files was not granted. "
-                "Nothing was saved."
-            )
-        downloads.enable_for_session(target)
+    downloads.require_download_dir()
 
     import anyio
 
-    result = await fetch_bytes(url)
-    # Writing up to download_max_mb and stat-ing a directory are both blocking
-    # syscalls; keep them off the event loop so a large save doesn't stall
-    # every other in-flight request.
+    # Directory scans and writes are blocking syscalls; keep them off the event
+    # loop so a large download directory or save cannot stall other requests.
     await anyio.to_thread.run_sync(downloads.purge_expired)
+    result = await fetch_bytes(url)
     path = await anyio.to_thread.run_sync(
         downloads.save, url, result.data or b"", result.media_type
     )
@@ -941,12 +901,15 @@ async def download(
     ]
     if result.width is not None:
         lines.append(f"- **Dimensions:** {result.width}×{result.height}px")
-    lines += [
-        f"- **SHA-256:** `{result.sha256}`",
-        "",
-        f"> Deleted automatically after {settings.download_ttl_hours}h. "
-        "Copy it elsewhere to keep it.",
-    ]
+    lines.append(f"- **SHA-256:** `{result.sha256}`")
+    lines.append("")
+    if settings.download_ttl_hours == 0:
+        lines.append("> TTL cleanup is disabled; this file will not expire automatically.")
+    else:
+        lines.append(
+            f"> Deleted automatically after {settings.download_ttl_hours}h. "
+            "Copy it elsewhere to keep it."
+        )
     return "\n".join(lines)
 
 

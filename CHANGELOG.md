@@ -4,6 +4,47 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 semantic versioning.
 
+## [0.9.0] - 2026-07-31
+
+Download by default, and finish every release on GitHub as well as PyPI.
+
+### Changed
+
+- **`download` now works with zero configuration.** Files go to
+  `${SEARCH_MCP_CACHE_DIR}/downloads` (`~/.cache/search-mcp/downloads` locally
+  and `/data/downloads` in Docker), still expire after 24 hours by default, and
+  retain the existing filename, path-containment, response-size and SSRF guards.
+  Set `SEARCH_MCP_DOWNLOAD_ENABLED=false` for an explicit opt-out, or
+  `SEARCH_MCP_DOWNLOAD_DIR` to override only the destination.
+- **Download policy is operator-owned instead of process-global client state.**
+  The old elicitation answer applied to every caller sharing one HTTP process.
+  Removing that session flag means one caller can no longer silently authorize
+  downloads for another; disabled calls are rejected before any network request.
+- **Release tags now produce a recoverable GitHub Release as well as PyPI
+  artifacts.** The workflow validates tag, project, lockfile and changelog
+  versions, builds once, stages the wheel and sdist on a draft Release, publishes
+  those same files to PyPI, then exposes the GitHub Release as Latest.
+
+### Fixed
+
+- **A blank `SEARCH_MCP_DOWNLOAD_DIR` no longer means the current working
+  directory.** Empty and whitespace-only values now select the dynamic default
+  sandbox instead of being parsed as `Path(".")`.
+- **The effective download limit is documented accurately.** Remote bodies are
+  bounded by the smaller of `SEARCH_MCP_MAX_RESPONSE_BYTES` and
+  `SEARCH_MCP_DOWNLOAD_MAX_MB`; the defaults therefore allow 25,000,000 bytes
+  (about 23.8 MiB), not the full 100 MiB disk-layer cap.
+- **`SEARCH_MCP_DOWNLOAD_TTL_HOURS=0` no longer claims files expire in `0h`.**
+  The documented "keep forever" value now reports that TTL cleanup is disabled.
+  Both that setting and `SEARCH_MCP_DOWNLOAD_MAX_MB` also reject negative
+  values instead of accepting a configuration that refuses every file.
+- **A missing or unreadable download directory no longer blocks startup.** TTL
+  cleanup logs and skips the scan rather than raising out of server start, and
+  it now runs before the network fetch as documented.
+- **`~` in `SEARCH_MCP_CACHE_DIR` is expanded once, in settings.** The cache
+  database and the derived download sandbox can no longer resolve to different
+  roots.
+
 ## [0.8.0] - 2026-07-30
 
 Search in your own language, and keep the SSRF guard switched on.

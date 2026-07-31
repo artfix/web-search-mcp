@@ -49,6 +49,8 @@ def _hermetic_config(tmp_path_factory, monkeypatch):
         "SEARCH_MCP_PROXY",
         "SEARCH_MCP_PROXY_ENGINES",
         "SEARCH_MCP_DOCUMENT_ROOT",
+        "SEARCH_MCP_CACHE_DIR",
+        "SEARCH_MCP_DOWNLOAD_ENABLED",
         "SEARCH_MCP_DOWNLOAD_DIR",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -59,9 +61,24 @@ def _hermetic_config(tmp_path_factory, monkeypatch):
     keystore._reset_cache()
     # `settings` is a module-level singleton built at import time, so clearing
     # the env is not enough — reset the fields that were already read from it.
-    for name in ("allow_private_hosts", "ssrf_resolve_addresses",
-                 "document_root", "download_dir"):
+    for name in (
+        "allow_private_hosts",
+        "ssrf_resolve_addresses",
+        "document_root",
+        "download_enabled",
+        "download_dir",
+    ):
         monkeypatch.setattr(settings, name, Settings.model_fields[name].default)
+    monkeypatch.setattr(
+        settings, "cache_dir", tmp_path_factory.mktemp("download-cache")
+    )
+    # The singleton captures its database path when modules are imported during
+    # collection, before this fixture can replace cache_dir. Point it at the
+    # per-test cache root too so no test attempts to write the developer's
+    # configured cache path (which may also be read-only in CI sandboxes).
+    from search_mcp.cache import cache
+
+    monkeypatch.setattr(cache, "_path", str(settings.cache_path()))
 
     # The fake-IP verdict is memoised per process; tests re-stub the resolver,
     # so a verdict from one test must not decide the next.

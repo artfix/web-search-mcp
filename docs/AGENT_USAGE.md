@@ -133,8 +133,10 @@ want one source.
 
 For non-text resources, `fetch` describes rather than decodes: an image returns
 its type, size and dimensions. Only pass `inline=True` when you actually need to
-look at the picture — it is expensive. `download` writes to disk and is disabled
-until the user allows it.
+look at the picture — it is expensive. `download` is a write operation: it saves
+to an auto-expiring local directory by default. Use the returned `saved_path`
+rather than guessing it; if the operator disabled downloads, report that refusal
+instead of trying to bypass it.
 
 If a result includes `gated_engines` or `gated_hint`, report the gate honestly.
 Do not treat a CAPTCHA, consent wall, or login wall as proof that the web has no

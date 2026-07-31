@@ -176,10 +176,37 @@ def test_settings_rejects_negative_rate_limit():
         Settings(rate_limit_per_minute=-5)
 
 
+@pytest.mark.parametrize("field", ["download_ttl_hours", "download_max_mb"])
+def test_settings_rejects_negative_download_limits(field):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(**{field: -1})
+
+    message = str(exc_info.value)
+    assert field in message
+    assert "greater than or equal to 0" in message
+
+
 def test_new_safety_settings_defaults():
     s = Settings()
     assert s.allow_private_hosts is False
     assert s.document_root is None
+    assert s.download_enabled is True
+    assert s.download_dir is None
     assert s.max_response_bytes == 25_000_000
     assert s.max_pdf_pages == 200
     assert s.max_document_chars == 2_000_000
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_download_directory_uses_dynamic_default(value):
+    assert Settings(download_dir=value).download_dir is None
+
+
+def test_cache_and_download_directories_expand_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings = Settings(cache_dir="~/cache", download_dir="~/downloads")
+
+    assert settings.cache_dir == tmp_path / "cache"
+    assert settings.download_dir == tmp_path / "downloads"

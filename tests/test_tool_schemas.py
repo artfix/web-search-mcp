@@ -39,8 +39,7 @@ EXPECTED_TOOL_ORDER = [
     "download",
 ]
 
-# Every tool reads except this one — it is the only thing in the server that
-# writes outside the cache, which is why it asks permission first.
+# Every tool reads except this one — it writes an auto-expiring local file.
 WRITING_TOOLS = {"download"}
 
 # Tools whose return annotation is a union (`str | dict` / `str | list[dict]`),
@@ -175,6 +174,11 @@ async def test_engines_tool_output_schema_is_a_wrapped_string_array():
 async def test_every_tool_input_schema_is_an_object():
     for name, tool in (await _tools_by_name()).items():
         assert tool.input_schema["type"] == "object", f"{name} input schema is not an object"
+
+
+async def test_download_input_schema_has_no_policy_controls():
+    tool = (await _tools_by_name())["download"]
+    assert set(tool.input_schema["properties"]) == {"url", "format"}
 
 
 # ---------------------------------------------------------------------------

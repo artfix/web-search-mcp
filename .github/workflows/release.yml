@@ -4,6 +4,13 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # Reuses ci.yml verbatim so the release gate and the PR gate are the same
   # definition — they can never silently diverge.
@@ -13,16 +20,228 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
-    # Publishes `free-search-mcp` with the PYPI_API_TOKEN repo secret
-    # (Settings → Secrets and variables → Actions). Every `v*` tag push
-    # publishes automatically; the only maintenance ever needed is rotating
-    # the token on pypi.org and updating that one secret.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
-      - name: Build sdist and wheel
-        run: uv build
+
+      - name: Validate release metadata
+        id: release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Release tags must match vMAJOR.MINOR.PATCH; got $TAG" >&2
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+
+          project_version="$(uv version --short)"
+          if [[ "$project_version" != "$version" ]]; then
+            echo "pyproject version $project_version != tag $version" >&2
+            exit 1
+          fi
+          uv lock --check
+
+          python3 - "$version" <<'PY'
+          import sys
+          from pathlib import Path
+
+          expected = sys.argv[1]
+          lines = Path("CHANGELOG.md").read_text().splitlines()
+          prefix = f"## [{expected}] - "
+          try:
+              start = next(i for i, line in enumerate(lines) if line.startswith(prefix))
+          except StopIteration:
+              raise SystemExit(f"CHANGELOG has no {expected} release section") from None
+          end = next(
+              (i for i in range(start + 1, len(lines)) if lines[i].startswith("## [")),
+              len(lines),
+          )
+          notes = "\n".join(lines[start + 1 : end]).strip() + "\n"
+          Path("release-notes.md").write_text(notes)
+          PY
+
+          if [[ "$(git cat-file -t "$TAG")" != "tag" ]]; then
+            echo "$TAG must be an annotated tag" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse "$TAG^{}")" != "$GITHUB_SHA" ]]; then
+            echo "$TAG does not resolve to the workflow commit" >&2
+            exit 1
+          fi
+          git fetch origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "$TAG does not point into main history" >&2
+            exit 1
+          fi
+          title="$(git for-each-ref --format='%(contents:subject)' "refs/tags/$TAG")"
+          if [[ -z "$title" ]]; then
+            echo "$TAG has no annotation subject" >&2
+            exit 1
+          fi
+          printf '%s\n' "$title" > release-title.txt
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release artifacts
+        id: github_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          metadata_file="$(mktemp)"
+          errors_file="$(mktemp)"
+          expected=(
+            "free_search_mcp-$VERSION-py3-none-any.whl"
+            "free_search_mcp-$VERSION.tar.gz"
+          )
+          validate_dist_artifacts() {
+            local name
+            local -a actual wanted
+            mapfile -t actual < <(
+              find dist -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort
+            )
+            mapfile -t wanted < <(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)
+            if [[ "${#actual[@]}" -ne "${#wanted[@]}" ]] || \
+              ! diff -u \
+                <(printf '%s\n' "${wanted[@]}") \
+                <(printf '%s\n' "${actual[@]}"); then
+              echo "dist/ must contain exactly the wheel and sdist for version $VERSION" >&2
+              exit 1
+            fi
+            for name in "${expected[@]}"; do
+              if [[ ! -f "dist/$name" ]]; then
+                echo "Expected dist/$name to be a regular file" >&2
+                exit 1
+              fi
+            done
+          }
+          release_exists=false
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            > "$metadata_file" 2> "$errors_file"; then
+            release_exists=true
+            is_draft="$(jq -r .draft "$metadata_file")"
+            mapfile -t asset_names < <(jq -r '.assets[].name' "$metadata_file")
+            assets_complete=true
+            if [[ "${#asset_names[@]}" -ne "${#expected[@]}" ]]; then
+              assets_complete=false
+            else
+              for name in "${expected[@]}"; do
+                if [[ ! " ${asset_names[*]} " =~ " $name " ]]; then
+                  assets_complete=false
+                fi
+              done
+            fi
+            if [[ "$assets_complete" == "true" ]]; then
+              gh release download "$TAG" --dir dist \
+                --pattern "*.whl" --pattern "*.tar.gz"
+              validate_dist_artifacts
+              if [[ "$is_draft" == "true" ]]; then
+                gh release edit "$TAG" \
+                  --title "$(<release-title.txt)" \
+                  --notes-file release-notes.md
+                echo "state=draft" >> "$GITHUB_OUTPUT"
+              else
+                echo "state=published" >> "$GITHUB_OUTPUT"
+              fi
+            elif [[ "$is_draft" == "true" ]]; then
+              gh release delete "$TAG" --yes
+              release_exists=false
+            else
+              echo "Published release assets do not match version $VERSION" >&2
+              exit 1
+            fi
+          elif ! jq -e '.status == "404" or .status == 404' "$metadata_file" >/dev/null; then
+            cat "$errors_file" >&2
+            exit 1
+          fi
+
+          if [[ "$release_exists" == "false" ]]; then
+            uv build --out-dir dist
+            validate_dist_artifacts
+            artifacts=("dist/${expected[0]}" "dist/${expected[1]}")
+            gh release create "$TAG" "${artifacts[@]}" \
+              --verify-tag \
+              --fail-on-no-commits \
+              --draft \
+              --latest=false \
+              --title "$(<release-title.txt)" \
+              --notes-file release-notes.md
+            echo "state=draft" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify existing PyPI files
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          metadata_file="$(mktemp)"
+          http_status="$(curl --silent --show-error --retry 3 \
+            --output "$metadata_file" --write-out '%{http_code}' \
+            "https://pypi.org/pypi/free-search-mcp/$VERSION/json")"
+          if [[ "$http_status" == "404" ]]; then
+            exit 0
+          fi
+          if [[ "$http_status" != "200" ]]; then
+            echo "PyPI metadata request failed with HTTP $http_status" >&2
+            exit 1
+          fi
+          python3 - "$metadata_file" dist <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text())
+          artifacts = {
+              path.name: path
+              for path in Path(sys.argv[2]).iterdir()
+              if path.is_file() and not path.name.startswith(".")
+          }
+          remote_files = {item["filename"]: item for item in metadata["urls"]}
+          if set(remote_files) != set(artifacts):
+              raise SystemExit("PyPI and GitHub release filenames differ")
+          for filename, path in artifacts.items():
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != remote_files[filename]["digests"]["sha256"]:
+                  raise SystemExit(f"PyPI file {filename} differs from GitHub asset")
+          PY
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/
+          skip-existing: true
+          attestations: false
+
+      - name: Publish GitHub Release
+        if: steps.github_release.outputs.state == 'draft'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          latest=true
+          while IFS= read -r published_tag; do
+            published_version="${published_tag#v}"
+            if [[ "$published_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && \
+              [[ "$(printf '%s\n%s\n' "$VERSION" "$published_version" | sort -V | tail -n 1)" != "$VERSION" ]]; then
+              latest=false
+              break
+            fi
+          done < <(gh release list --exclude-drafts --exclude-pre-releases \
+            --limit 100 --json tagName --jq '.[].tagName')
+          if [[ "$latest" == "true" ]]; then
+            gh release edit "$TAG" --draft=false --latest --verify-tag
+          else
+            gh release edit "$TAG" --draft=false --latest=false --verify-tag
+          fi

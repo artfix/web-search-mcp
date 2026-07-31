@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .keystore import load_all_env_files
@@ -136,14 +136,14 @@ class Settings(BaseSettings):
     # read_doc local-file sandbox root. None (default) DISABLES local file
     # reads entirely — the user opts in by pointing this at a directory.
     document_root: Path | None = None
-    # Download sandbox. None (default) DISABLES writing files to disk; the
-    # `download` tool then asks the user before enabling it for the session.
-    # Same posture as document_root: writing to someone's disk is opt-in.
+    # Download sandbox. Enabled by default under cache_dir/downloads; operators
+    # can disable it explicitly or override the destination directory.
+    download_enabled: bool = True
     download_dir: Path | None = None
     # Downloads are ephemeral. Files older than this are deleted before the
     # next download and at startup; 0 disables the purge (files kept forever).
-    download_ttl_hours: int = 24
-    download_max_mb: int = 100
+    download_ttl_hours: int = Field(default=24, ge=0)
+    download_max_mb: int = Field(default=100, ge=0)
     # Response-bomb guard: cap on remote response body bytes.
     max_response_bytes: int = 25_000_000
     # Decompression-bomb guard: max PDF pages to parse.
@@ -151,6 +151,20 @@ class Settings(BaseSettings):
     # Cap on extracted document text (distinct from max_content_chars, which
     # is the fetch-truncation knob for web pages).
     max_document_chars: int = 2_000_000
+
+    @field_validator("download_dir", mode="before")
+    @classmethod
+    def empty_download_dir_uses_default(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        return value
+
+    @field_validator("cache_dir", "download_dir")
+    @classmethod
+    def expand_user_paths(cls, value: Path | None) -> Path | None:
+        return value.expanduser() if value is not None else None
 
     def cache_path(self) -> Path:
         self.cache_dir.mkdir(parents=True, exist_ok=True)

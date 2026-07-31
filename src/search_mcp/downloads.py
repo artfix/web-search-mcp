@@ -1,20 +1,13 @@
-"""Opt-in, ephemeral file downloads.
+"""Default-on, ephemeral file downloads.
 
-Writing to a user's disk is the only thing this server does that outlives the
-call, so it is off unless someone turns it on:
-
-  * `SEARCH_MCP_DOWNLOAD_DIR` unset (the default) means downloads are
-    disabled outright — the same posture as `document_root` for local reads.
-  * With no directory configured, the `download` tool ASKS (via MCP
-    elicitation) before writing anything, and the answer applies to the
-    running process only. Making it permanent means setting the env var.
-  * Everything written is ephemeral: files older than
-    `SEARCH_MCP_DOWNLOAD_TTL_HOURS` (default 24) are deleted on the next
-    download and at startup.
+Files are saved under the cache directory unless an operator overrides the
+sandbox with `SEARCH_MCP_DOWNLOAD_DIR` or disables downloads with
+`SEARCH_MCP_DOWNLOAD_ENABLED=false`. Files older than
+`SEARCH_MCP_DOWNLOAD_TTL_HOURS` (default 24) are deleted on the next download
+and at startup.
 
 Nothing here trusts a remote filename. Names are sanitized to a single path
-component and the final path is re-checked against the download root, because
-a Content-Disposition header is attacker-controlled input.
+component and the final path is re-checked against the download root.
 """
 
 from __future__ import annotations
@@ -30,10 +23,11 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
-# Set by `enable_for_session` when the user accepts the elicitation. Process-
-# scoped on purpose: an interactive "yes" should not silently persist into
-# every future run of the server.
-_session_dir: Path | None = None
+_DISABLED_MESSAGE = (
+    "Downloads are disabled by SEARCH_MCP_DOWNLOAD_ENABLED=false. "
+    "Remove that setting or set it to true; SEARCH_MCP_DOWNLOAD_DIR "
+    "only overrides the destination."
+)
 
 # Anything outside this set is replaced. Deliberately strict: the remote
 # controls this string, and it becomes a filename.
@@ -42,33 +36,25 @@ _MAX_NAME = 80
 
 
 def default_download_dir() -> Path:
-    """Where downloads land when the user opts in without naming a directory."""
-    return Path(settings.cache_dir) / "downloads"
+    """The default download directory derived from the active cache root."""
+    return settings.cache_dir / "downloads"
 
 
 def download_dir() -> Path | None:
-    """The active download directory, or None when downloads are disabled."""
+    """The active download directory, or None when explicitly disabled."""
+    if not settings.download_enabled:
+        return None
     if settings.download_dir is not None:
-        return Path(settings.download_dir).expanduser()
-    return _session_dir
+        return settings.download_dir
+    return default_download_dir()
 
 
-def is_enabled() -> bool:
-    return download_dir() is not None
-
-
-def enable_for_session(path: Path | None = None) -> Path:
-    """Turn downloads on for this process only. Returns the directory."""
-    global _session_dir
-    _session_dir = Path(path or default_download_dir()).expanduser()
-    _session_dir.mkdir(parents=True, exist_ok=True)
-    return _session_dir
-
-
-def disable_for_session() -> None:
-    """Undo `enable_for_session` (used by tests and by an explicit opt-out)."""
-    global _session_dir
-    _session_dir = None
+def require_download_dir() -> Path:
+    """Return the active download directory or reject operator disablement."""
+    root = download_dir()
+    if root is None:
+        raise PermissionError(_DISABLED_MESSAGE)
+    return root
 
 
 def safe_filename(url: str, media_type: str = "", blob: bytes = b"") -> str:
@@ -111,22 +97,24 @@ def purge_expired(now: float | None = None) -> int:
     frequently never run.
     """
     root = download_dir()
-    if root is None or not root.exists():
+    if root is None:
         return 0
     ttl_seconds = max(0, settings.download_ttl_hours) * 3600
     if ttl_seconds == 0:
         return 0
     cutoff = (now if now is not None else time.time()) - ttl_seconds
     removed = 0
-    for path in root.iterdir():
-        if not path.is_file():
-            continue
-        try:
-            if path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed += 1
-        except OSError as exc:  # a file vanishing under us is not an error
-            log.debug("could not purge %s: %s", path, exc)
+    try:
+        for path in root.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError as exc:  # a file vanishing under us is not an error
+                log.debug("could not purge %s: %s", path, exc)
+    except OSError as exc:
+        log.debug("could not scan download directory %s: %s", root, exc)
+        return removed
     if removed:
         log.info("purged %d expired download(s) from %s", removed, root)
     return removed
@@ -138,13 +126,7 @@ def save(url: str, blob: bytes, media_type: str = "") -> Path:
     Raises PermissionError when downloads are disabled, and ValueError when
     the payload exceeds `SEARCH_MCP_DOWNLOAD_MAX_MB`.
     """
-    root = download_dir()
-    if root is None:
-        raise PermissionError(
-            "Downloads are disabled. Set SEARCH_MCP_DOWNLOAD_DIR to a directory "
-            "to enable them permanently, or call the `download` tool, which will "
-            "ask before writing anything."
-        )
+    root = require_download_dir()
     cap = settings.download_max_mb * 1024 * 1024
     if cap and len(blob) > cap:
         raise ValueError(
