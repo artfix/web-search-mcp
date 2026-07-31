@@ -66,15 +66,21 @@ jobs:
           Path("release-notes.md").write_text(notes)
           PY
 
-          if [[ "$(git cat-file -t "$TAG")" != "tag" ]]; then
+          # checkout fetches tags as lightweight refs, so the local ref may
+          # point straight at the commit even when the pushed tag is annotated.
+          # Re-fetch the tag object itself before judging what kind it is.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [[ "$(git cat-file -t "refs/tags/$TAG")" != "tag" ]]; then
             echo "$TAG must be an annotated tag" >&2
             exit 1
           fi
-          if [[ "$(git rev-parse "$TAG^{}")" != "$GITHUB_SHA" ]]; then
+          if [[ "$(git rev-parse "refs/tags/$TAG^{}")" != "$GITHUB_SHA" ]]; then
             echo "$TAG does not resolve to the workflow commit" >&2
             exit 1
           fi
-          git fetch origin main:refs/remotes/origin/main
+          # A tag-triggered checkout only guarantees the tagged ref, so main is
+          # fetched explicitly rather than assumed present.
+          git fetch --force origin main:refs/remotes/origin/main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
             echo "$TAG does not point into main history" >&2
             exit 1
