@@ -5,6 +5,7 @@ don't trample the user's real cache.
 """
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -144,6 +145,44 @@ async def test_cache_search_unterminated_quote_hint(isolated_cache):
     assert isinstance(out, str)
     assert "quote" in out.lower()
     assert "operationalerror" not in out.lower()
+
+
+async def test_cache_search_unpacks_the_title_sentinel(isolated_cache):
+    """Metadata is packed into the cache's title column behind a sentinel, so
+    serving rows verbatim hands the caller "\\x01META\\x01{...}" as a title."""
+    from search_mcp.fetcher import _encode_title_meta
+    from search_mcp.server import cache_search
+
+    await isolated_cache.put_page(
+        "https://x.example/packed",
+        _encode_title_meta("Real Title", "Ada", "2026-01-01", "x.example"),
+        "zebra content",
+    )
+
+    rows = await cache_search("zebra", format="json")
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Real Title"
+    assert rows[0]["author"] == "Ada"
+    assert rows[0]["date"] == "2026-01-01"
+    assert rows[0]["sitename"] == "x.example"
+    assert "\x01" not in json.dumps(rows)
+
+    md = await cache_search("zebra", format="markdown")
+    assert "Real Title" in md
+    assert "\x01" not in md
+
+
+async def test_cache_search_keeps_plain_titles_from_older_rows(isolated_cache):
+    """Rows written before metadata capture hold a bare title, not a sentinel."""
+    from search_mcp.server import cache_search
+
+    await isolated_cache.put_page(
+        "https://x.example/legacy", "Plain Old Title", "zebra content"
+    )
+
+    rows = await cache_search("zebra", format="json")
+    assert rows[0]["title"] == "Plain Old Title"
+    assert rows[0]["author"] == ""
 
 
 async def test_cache_search_valid_query_empty_cache_uses_normal_message(isolated_cache):

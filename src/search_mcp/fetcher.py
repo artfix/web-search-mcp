@@ -139,6 +139,17 @@ def _decode_title_meta(raw: str | None) -> tuple[str, str, str, str]:
     )
 
 
+def decode_cached_title(row: dict[str, Any]) -> dict[str, Any]:
+    """Return a cache row with its packed title column unpacked into fields.
+
+    The cache stores metadata behind a sentinel inside `title` so the schema
+    could stay put; anything serving those rows to a caller has to undo that
+    or the sentinel shows up as the page title.
+    """
+    title, author, date, sitename = _decode_title_meta(row.get("title"))
+    return {**row, "title": title, "author": author, "date": date, "sitename": sitename}
+
+
 def _extract_main_html(html: str) -> tuple[str, str]:
     """Fallback: naive boilerplate strip + main-region heuristic."""
     tree = HTMLParser(html)

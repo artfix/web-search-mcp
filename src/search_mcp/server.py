@@ -20,7 +20,7 @@ from .compare import compare_urls
 from .config import settings
 from .documents import read_document
 from .engines import Category
-from .fetcher import fetch_bytes, fetch_many, fetch_page
+from .fetcher import decode_cached_title, fetch_bytes, fetch_many, fetch_page
 from .formatting import (
     errors_to_hint,
     render_compare,
@@ -635,7 +635,8 @@ async def cache_search(
     Returns:
     - markdown (default): a per-hit list of title, URL, and a `[bracket]`-
       highlighted snippet around the matched terms.
-    - json: list of {url, title, snippet}.
+    - json: list of {url, title, snippet, author, date, sitename}. The last
+      three are "" when the cached row predates metadata capture.
 
     Common mistakes:
     - Treating this like web search — it ONLY hits pages already in the local
@@ -649,7 +650,9 @@ async def cache_search(
         limit: Max hits to return.
         format: "markdown" or "json".
     """
-    rows = await cache.search_pages(query, limit=limit)
+    # The cache stores metadata packed behind a sentinel in the title column,
+    # so raw rows would hand the caller "\x01META\x01{...}" as a page title.
+    rows = [decode_cached_title(r) for r in await cache.search_pages(query, limit=limit)]
     if format == "json":
         return rows
     if not rows:

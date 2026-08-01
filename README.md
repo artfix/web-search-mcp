@@ -487,7 +487,7 @@ Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`
 (Source checkout: `"command": "uv", "args": ["--directory",
 "/absolute/path/to/free-search-mcp", "run", "search-mcp"]`.)
 
-Restart Claude Desktop. The nine tools above will appear in the tool
+Restart Claude Desktop. The ten tools above will appear in the tool
 drawer.
 
 ### Wire into other clients
