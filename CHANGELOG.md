@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 semantic versioning.
 
+## [0.9.1] - 2026-07-31
+
+### Fixed
+
+- **`cache_search` no longer returns the cache's internal title sentinel.**
+  Metadata is packed into the title column behind `\x01META\x01` so the schema
+  could stay put, but the tool served those rows verbatim — the page title
+  arrived as `\x01META\x01{"title": ...}\x01` in both markdown and json. Titles
+  are now unpacked at the tool boundary, and the `author`, `date` and
+  `sitename` already stored alongside them are returned instead of discarded.
+  Rows written before metadata capture hold a plain title and are unaffected.
+  Present since 0.4.2.
+
 ## [0.9.0] - 2026-07-31
 
 Download by default, and finish every release on GitHub as well as PyPI.
