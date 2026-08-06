@@ -1,3 +1,6 @@
+import base64
+import binascii
+import re
 from urllib.parse import quote_plus
 
 from ..config import settings
@@ -12,6 +15,43 @@ from .base import (
     safesearch_param,
     text_of,
 )
+
+# Organic Bing hrefs are frequently wrapped in a click-tracking redirect:
+#   https://www.bing.com/ck/a?!&&p=<hash>&u=a1<base64url of the real URL>&ntb=1
+# The `u` value carries a 2-character type prefix ("a1") in front of the
+# base64url payload.
+_BING_REDIRECT_U = re.compile(r"[?&]u=([A-Za-z0-9+/_=-]+)")
+
+
+def resolve_bing_url(raw_url: str) -> str:
+    """Unwrap a bing.com/ck/a click-tracking redirect to the publisher URL.
+
+    Leaving the wrapper in place is not cosmetic. The blob is unique per SERP
+    impression, so it defeats both the URL-keyed RRF merge and _dedup_by_title
+    in the aggregator: the same page found by Bing and by DuckDuckGo is scored
+    as two different results and both are emitted, spending the caller's
+    max_results on duplicates. It also hands the model a link that says nothing
+    about the publisher and cannot be judged for relevance without fetching it.
+
+    Anything that is not a decodable wrapper is returned unchanged — a working
+    redirect link beats dropping the result.
+    """
+    match = _BING_REDIRECT_U.search(raw_url)
+    if not match:
+        return raw_url
+    encoded = match.group(1)
+    if len(encoded) < 3:
+        return raw_url
+    payload = encoded[2:]
+    # base64url -> base64, re-padded to a multiple of 4.
+    padded = payload.replace("-", "+").replace("_", "/")
+    padded += "=" * (-len(padded) % 4)
+    try:
+        decoded = base64.b64decode(padded).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return raw_url
+    return decoded if decoded.startswith("http") else raw_url
+
 
 # Bing's documented freshness filter values.
 _BING_FRESHNESS = {
@@ -82,7 +122,7 @@ class BingEngine(Engine):
             link = li.css_first("h2 a")
             if not link:
                 continue
-            url = link.attributes.get("href", "")
+            url = resolve_bing_url(link.attributes.get("href", ""))
             title = text_of(link)
             snippet_node = (
                 li.css_first(".b_caption p")

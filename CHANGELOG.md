@@ -4,7 +4,26 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 semantic versioning.
 
-## [0.9.1] - 2026-07-31
+## [0.9.2] - 2026-08-06
+
+### Fixed
+
+- **Bing results are now publisher URLs instead of `bing.com/ck/a` tracking
+  blobs.** `BingEngine.parse` returned the raw `href`, and on the www4 SERP
+  essentially every organic href is wrapped in a click-tracking redirect
+  (`/ck/a?…&u=a1<base64url>&ntb=1`). Half of a default four-engine run therefore
+  came back as opaque `bing.com` links. This was not merely cosmetic: the blob
+  carries a per-impression hash, so it is unique on every search, which defeats
+  both the URL key the RRF merge fuses on and the `_dedup_by_title` pass behind
+  it. A page found by Bing *and* by DuckDuckGo scored as two separate results
+  and both were emitted — so a `max_results=10` run spent slots on duplicates of
+  pages it had already returned (observed: "Defining schemas | Zod" at rank 1
+  from DuckDuckGo and again at rank 8 as a Bing blob). The wrapper also left the
+  caller unable to tell what a result even was without fetching it, which is the
+  opposite of what a snippet-bearing search result is for. The `u` payload is
+  now base64url-decoded to the real target; anything that is not a decodable
+  wrapper passes through untouched, since a working redirect link still beats
+  dropping the result. Present since the engine was added.
 
 ### Fixed
 

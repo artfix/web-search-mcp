@@ -342,3 +342,51 @@ async def test_searx_returns_first_nonempty_when_racing(monkeypatch):
     out = await e.search("hello", max_results=10)
     assert len(out) == 3
     assert all(r.engine == "searx" for r in out)
+
+
+# --- Bing ck/a redirect unwrapping ------------------------------------------
+# Raw wrapper hrefs are unique per SERP impression, so leaving them in defeats
+# the RRF merge's URL key and the title dedup: the same page found by Bing and
+# by DuckDuckGo is emitted twice and the caller's max_results is spent on
+# duplicates.
+
+
+def _bing_wrapper(target: str) -> str:
+    import base64
+
+    payload = base64.urlsafe_b64encode(target.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"https://www.bing.com/ck/a?!&&p=deadbeef&u=a1{payload}&ntb=1"
+
+
+def test_bing_resolve_url_unwraps_redirect():
+    from search_mcp.engines.bing import resolve_bing_url
+
+    target = "https://zod.dev/api?id=zstrictobject"
+    assert resolve_bing_url(_bing_wrapper(target)) == target
+
+
+def test_bing_resolve_url_passes_through_plain_and_undecodable():
+    from search_mcp.engines.bing import resolve_bing_url
+
+    plain = "https://example.com/page"
+    assert resolve_bing_url(plain) == plain
+    # `u` present but not a decodable http payload — keep the working link.
+    junk = "https://www.bing.com/ck/a?u=a1!!!!notbase64"
+    assert resolve_bing_url(junk) == junk
+
+
+def test_bing_parse_emits_publisher_urls():
+    from search_mcp.engines import get_engine
+
+    target = "https://zod.dev/api?id=zstrictobject"
+    html = (
+        "<ol id='b_results'>"
+        "<li class='b_algo'>"
+        f"<h2><a href=\"{_bing_wrapper(target)}\">Defining schemas | Zod</a></h2>"
+        "<div class='b_caption'><p>Strict object schemas.</p></div>"
+        "</li></ol>"
+    )
+
+    results = get_engine("bing").parse(html)
+
+    assert [r.url for r in results] == [target]
