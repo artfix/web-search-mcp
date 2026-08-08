@@ -10,7 +10,7 @@ v1, but `free-search-mcp` requires `mcp` v2. So we use Gradio only for
 the landing page and run the upstream MCP server as a mounted ASGI app.
 
 To run locally:
-  uv run --with gradio --with mcp --with uvicorn --with fastapi python hf-space/app.py
+  PORT=38472 uv run --with gradio --with mcp --with uvicorn --with fastapi python hf-space/app.py
 """
 from __future__ import annotations
 
@@ -137,6 +137,6 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", "7860")),
+        port=int(os.environ.get("PORT", "38472")),
         log_level=os.environ.get("LOG_LEVEL", "info"),
     )

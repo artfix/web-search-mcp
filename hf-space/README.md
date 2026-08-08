@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: green
 sdk: gradio
 sdk_version: 6.0.0
-app_port: 7860
+app_port: 38472
 pinned: false
 license: mit
 short_description: Multi-engine web search via MCP — 18 engines, zero API keys
