@@ -1,0 +1,10 @@
+# Hugging Face Space requirements (Gradio SDK reads this file).
+#
+# This Space is a pure ASGI app (Starlette + the upstream MCP-over-HTTP
+# server). The Gradio SDK label is used because Docker Spaces are blocked
+# on this free-tier account.
+#
+# `..` installs the parent project (`free-search-mcp`) in editable mode
+# from the repository root.
+-e ..
+uvicorn>=0.30
