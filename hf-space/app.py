@@ -18,6 +18,7 @@ To run locally:
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from contextlib import asynccontextmanager
@@ -52,7 +53,7 @@ from search_mcp import server as search_server
 
 
 # Default policy for the public/free build. Override via the admin page.
-os.environ.setdefault("SEARCH_MCP_DEFAULT_ENGINES", "false")
+os.environ.setdefault("SEARCH_MCP_RESCUE_ENABLED", "false")
 os.environ.setdefault("SEARCH_MCP_RESCUE_ENGINES", "[]")
 os.environ.setdefault("SEARCH_MCP_FETCH_STRATEGY", "http")
 
@@ -154,18 +155,61 @@ with gr.Blocks(title="Web Search MCP", analytics_enabled=False) as demo:
 # Admin dashboard — only useful when running locally; harmless on HF.
 # ---------------------------------------------------------------------------
 
+# Engines available without API keys or browsers.
+KEYLESS_ENGINES = [
+    "duckduckgo",
+    "mojeek",
+    "bing",
+    "googlenews",
+    "anysearch",
+    "arxiv",
+    "openalex",
+    "crossref",
+    "pubmed",
+    "github",
+    "stackexchange",
+    "hackernews",
+    "wikipedia",
+    "openlibrary",
+    "openverse",
+    "zenodo",
+    "bilibili",
+    "sogou",
+    "so360",
+    "gdelt",
+]
+
+# Engines that need Playwright/Chromium.
+BROWSER_ENGINES = [
+    "google",
+    "startpage",
+    "brave",
+    "baidu",
+    "zhihu",
+]
+
+# Engines that need an API key (set via extra env vars, not shown here).
+API_KEY_ENGINES = [
+    "brave_api",
+    "serper",
+    "tavily",
+    "google_cse",
+    "github_code",
+]
+
+
 ADMIN_SETTINGS = [
-    ("PORT", "Server port", "38472"),
-    ("SEARCH_MCP_DEFAULT_ENGINES", "Default engines (JSON list)", '["duckduckgo","mojeek","googlenews","bing","anysearch"]'),
-    ("SEARCH_MCP_FETCH_STRATEGY", "Fetch strategy (http|browser|auto)", "http"),
-    ("SEARCH_MCP_RESCUE_ENABLED", "Enable rescue fallback (true|false)", "false"),
-    ("SEARCH_MCP_RESCUE_ENGINES", "Rescue engines (JSON list)", "[]"),
-    ("SEARCH_MCP_MAX_RESULTS", "Max results per engine", "10"),
-    ("SEARCH_MCP_HTTP_TIMEOUT", "HTTP timeout seconds", "15"),
-    ("SEARCH_MCP_REQUEST_DELAY", "Request delay seconds", "0"),
-    ("SEARCH_MCP_CACHE_TTL_HOURS", "Cache TTL hours", "168"),
-    ("SEARCH_MCP_CACHE_MAX_MB", "Cache max MB", "256"),
-    ("SEARCH_MCP_LOG_LEVEL", "Log level", "info"),
+    ("PORT", "Server port", "38472", "number"),
+    ("SEARCH_MCP_DEFAULT_ENGINES", "Default search engines", '["duckduckgo","mojeek","googlenews","bing","anysearch"]', "engines"),
+    ("SEARCH_MCP_FETCH_STRATEGY", "Fetch strategy", "http", "choice:http,browser,auto"),
+    ("SEARCH_MCP_RESCUE_ENABLED", "Enable rescue fallback", "false", "choice:true,false"),
+    ("SEARCH_MCP_RESCUE_ENGINES", "Rescue engines", "[]", "engines"),
+    ("SEARCH_MCP_MAX_RESULTS", "Max results per engine", "10", "number"),
+    ("SEARCH_MCP_HTTP_TIMEOUT", "HTTP timeout (seconds)", "15", "number"),
+    ("SEARCH_MCP_REQUEST_DELAY", "Request delay (seconds)", "0", "number"),
+    ("SEARCH_MCP_CACHE_TTL_HOURS", "Cache TTL (hours)", "168", "number"),
+    ("SEARCH_MCP_CACHE_MAX_MB", "Cache max size (MB)", "256", "number"),
+    ("SEARCH_MCP_LOG_LEVEL", "Log level", "info", "choice:debug,info,warning,error"),
 ]
 
 
@@ -192,10 +236,9 @@ def _read_env() -> dict[str, str]:
 
 def _write_env(values: dict[str, str]) -> None:
     lines = ["# Web Search MCP local settings", ""]
-    for key, label, default in ADMIN_SETTINGS:
+    for key, label, default, kind in ADMIN_SETTINGS:
         val = values.get(key, default)
         lines.append(f"# {label}")
-        # Bare values; only quote strings that contain spaces or special chars.
         if " " in val or any(c in val for c in ';|&<>(){}[]`$\\*?!\n\r'):
             lines.append(f'{key}="{val}"')
         else:
@@ -206,22 +249,49 @@ def _write_env(values: dict[str, str]) -> None:
 
 def _current_values() -> dict[str, str]:
     saved = _read_env()
-    return {key: saved.get(key, os.environ.get(key, default)) for key, _, default in ADMIN_SETTINGS}
+    return {key: saved.get(key, os.environ.get(key, default)) for key, _, default, _ in ADMIN_SETTINGS}
+
+
+def _parse_engines(raw: str) -> list[str]:
+    raw = raw.strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return []
+    return [e.strip() for e in raw.split(",") if e.strip()]
+
+
+def _render_engines_checkbox(name: str, selected: list[str], options: list[str]) -> str:
+    html = f'<fieldset><legend>{name}</legend><div class="engine-grid">\n'
+    for engine in options:
+        checked = "checked" if engine in selected else ""
+        html += (
+            f'<label class="engine-chip">\n'
+            f'  <input type="checkbox" name="{name}" value="{engine}" {checked}>\n'
+            f'  <span>{engine}</span>\n'
+            f'</label>\n'
+        )
+    html += "</div></fieldset>\n"
+    return html
 
 
 ADMIN_CSS = """\
 :root {{ color-scheme: dark; }}
 body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; padding:2rem; }}
-.container {{ max-width: 720px; margin: 0 auto; }}
+.container {{ max-width: 820px; margin: 0 auto; }}
 h1 {{ color:#38bdf8; margin-top:0; }}
 h2 {{ color:#7dd3fc; margin-top:2rem; border-bottom:1px solid #334155; padding-bottom:.3rem; }}
 h3 {{ color:#94a3b8; margin-top:1.5rem; }}
-label {{ display:block; margin-top:1rem; font-weight:600; color:#94a3b8; font-size:.85rem; }}
-input, textarea {{ width:100%; background:#1e293b; border:1px solid #334155; color:#e2e8f0; padding:.6rem .8rem; border-radius:.375rem; font-size:.95rem; box-sizing:border-box; }}
-textarea {{ min-height:120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+.topbar {{ display:flex; gap:1rem; align-items:center; margin-bottom:1rem; }}
+label {{ display:block; margin-top:1.1rem; font-weight:600; color:#94a3b8; font-size:.85rem; }}
+input[type="text"], input[type="number"], select {{ width:100%; background:#1e293b; border:1px solid #334155; color:#e2e8f0; padding:.6rem .8rem; border-radius:.375rem; font-size:.95rem; box-sizing:border-box; }}
+select {{ appearance:none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2394a3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right .8rem center; padding-right:2rem; }}
 button {{ margin-top:1.5rem; background:#2563eb; color:white; border:none; padding:.75rem 1.5rem; border-radius:.5rem; font-size:1rem; cursor:pointer; }}
 button:hover {{ background:#1d4ed8; }}
-button.secondary {{ background:#475569; margin-right:.5rem; }}
+button.secondary {{ background:#475569; }}
 button.secondary:hover {{ background:#334155; }}
 .status {{ margin-top:1rem; padding:.75rem; border-radius:.375rem; background:#14532d; color:#86efac; }}
 .status.error {{ background:#450a0a; color:#fca5a5; }}
@@ -232,7 +302,16 @@ ul {{ line-height:1.8; }}
 table {{ border-collapse: collapse; width:100%; margin-top:1rem; }}
 th, td {{ border:1px solid #334155; padding:.5rem .75rem; text-align:left; }}
 th {{ background:#1e293b; }}
-a {{ color:#38bdf8; }}
+a {{ color:#38bdf8; text-decoration:none; }}
+.engine-grid {{ display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:.5rem; margin-top:.5rem; }}
+fieldset {{ border:1px solid #334155; border-radius:.5rem; padding:1rem; margin-top:1rem; }}
+legend {{ color:#94a3b8; font-weight:600; padding:0 .5rem; }}
+.engine-chip {{ display:flex; align-items:center; gap:.4rem; background:#1e293b; border:1px solid #334155; border-radius:.375rem; padding:.4rem .6rem; cursor:pointer; margin:0; }}
+.engine-chip:hover {{ background:#27364b; }}
+.engine-chip input {{ width:auto; accent-color:#38bdf8; }}
+.engine-chip span {{ color:#e2e8f0; font-weight:500; }}
+.extra-engines {{ margin-top:.75rem; }}
+.extra-engines input {{ width:100%; }}
 """
 
 ADMIN_HTML_HEAD = """\
@@ -248,9 +327,11 @@ ADMIN_HTML_HEAD = """\
 </head>
 <body>
 <div class="container">
+<div class="topbar">
 <h1>🔧 Web Search MCP Admin</h1>
-<p>Edit settings and click <strong>Save + Restart</strong>. Not sure what something does? Read the guide first.</p>
-<a href="/admin/guide"><button type="button" class="secondary">📖 Open Guide</button></a>
+<a href="/admin/guide"><button type="button" class="secondary">📖 Guide</button></a>
+</div>
+<p>Change settings below and click <strong>Save + Restart</strong>. The service will reload with the new values.</p>
 <form method="post" action="/admin/save">
 """
 
@@ -274,13 +355,32 @@ ADMIN_HTML_FOOT = """\
 def _admin_form(message: str = "", error: bool = False) -> HTMLResponse:
     values = _current_values()
     body = ADMIN_HTML_HEAD.format(css=ADMIN_CSS)
-    for key, label, _ in ADMIN_SETTINGS:
-        val = values.get(key, "")
+
+    for key, label, default, kind in ADMIN_SETTINGS:
+        val = values.get(key, default)
         body += f'<label for="{key}">{label}</label>\n'
-        if "\n" in val or len(val) > 60 or key in ("SEARCH_MCP_RESCUE_ENGINES", "SEARCH_MCP_DEFAULT_ENGINES"):
-            body += f'<textarea id="{key}" name="{key}">{val}</textarea>\n'
+
+        if kind == "engines":
+            selected = _parse_engines(val)
+            body += _render_engines_checkbox(key, selected, KEYLESS_ENGINES)
+            body += f'''
+<div class="extra-engines">
+  <label for="{key}_extra">Extra engines (browser/API-key, comma-separated)</label>
+  <input type="text" id="{key}_extra" name="{key}_extra" value="{','.join(e for e in selected if e not in KEYLESS_ENGINES)}" placeholder="e.g. brave_api, google_cse">
+</div>
+'''
+        elif kind.startswith("choice:"):
+            options = kind.split(":", 1)[1].split(",")
+            body += f'<select id="{key}" name="{key}">\n'
+            for opt in options:
+                selected = "selected" if opt == val else ""
+                body += f'  <option value="{opt}" {selected}>{opt}</option>\n'
+            body += '</select>\n'
+        elif kind == "number":
+            body += f'<input type="number" id="{key}" name="{key}" value="{val}">\n'
         else:
-            body += f'<input id="{key}" name="{key}" value="{val}">\n'
+            body += f'<input type="text" id="{key}" name="{key}" value="{val}">\n'
+
     if message:
         body += f'<div class="status{" error" if error else ""}">{message}</div>\n'
     body += ADMIN_HTML_FOOT.format(env_file=str(ENV_FILE))
@@ -294,16 +394,30 @@ async def admin_page(request: Request) -> HTMLResponse:
 async def admin_save(request: Request) -> HTMLResponse:
     form = await request.form()
     new_values: dict[str, str] = {}
-    for key, _, _ in ADMIN_SETTINGS:
-        raw = form.get(key)
-        if raw is not None:
-            new_values[key] = str(raw)
+
+    for key, label, default, kind in ADMIN_SETTINGS:
+        if kind == "engines":
+            selected = form.getlist(key) if hasattr(form, "getlist") else []
+            if not selected:
+                # FastAPI's FormData doesn't have getlist; fall back to multi keys.
+                selected = []
+                for k, v in form.multi_items():
+                    if k == key:
+                        selected.append(v)
+            extra_raw = form.get(f"{key}_extra") or ""
+            extras = [e.strip() for e in extra_raw.split(",") if e.strip()]
+            engines = selected + [e for e in extras if e not in selected]
+            new_values[key] = json.dumps(engines)
+        else:
+            raw = form.get(key)
+            if raw is not None:
+                new_values[key] = str(raw)
+
     _write_env(new_values)
 
     error = False
     message = "Settings saved."
     try:
-        # Fork a detached process that waits then restarts the service.
         subprocess.Popen(
             ["/usr/bin/env", "bash", "-c", "sleep 3 && systemctl --user restart web-search-mcp"],
             start_new_session=True,
@@ -330,7 +444,7 @@ GUIDE_HTML = """\
 </head>
 <body>
 <div class="container">
-<h1>📖 Web Search MCP — Idiot-Proof Guide</h1>
+<h1>📖 Web Search MCP — Guide</h1>
 <p><a href="/admin">← Back to admin</a></p>
 
 <h2>What is this thing?</h2>
@@ -347,16 +461,16 @@ GUIDE_HTML = """\
 <table>
 <tr><th>Setting</th><th>What it does</th></tr>
 <tr><td><code>PORT</code></td><td>TCP port the server listens on. Default 38472. Change it here if it collides with another app on this PC.</td></tr>
-<tr><td><code>SEARCH_MCP_DEFAULT_ENGINES</code></td><td>Which engines are used when you (or the robot) just say &quot;search&quot; without picking one. Must be a JSON list like <code>["duckduckgo","mojeek"]</code>.</td></tr>
-<tr><td><code>SEARCH_MCP_FETCH_STRATEGY</code></td><td><code>http</code> = fast, no browser. <code>browser</code> = uses Playwright/Chromium (slow, heavy, needs install). <code>auto</codeu003e = tries HTTP first, falls back to browser. On a free CPU box keep <code>http</code>.</td></tr>
-<tr><td><code>SEARCH_MCP_RESCUE_ENABLED</code></td><td>If <code>true</code>, when a search fails it tries other engines as backup. We keep it <code>false</code> because the default rescue engine (searx) is dead and mislabels results.</td></tr>
-<tr><td><code>SEARCH_MCP_RESCUE_ENGINES</code></td><td>JSON list of engines used only when rescue is enabled, e.g. <code>["bing","duckduckgo"]</code>.</td></tr>
-<tr><td><code>SEARCH_MCP_MAX_RESULTS</code></td><td>How many results to ask each engine for. 10 is a good default. More = slower.</td></tr>
-<tr><td><code>SEARCH_MCP_HTTP_TIMEOUT</code></td><td>Seconds to wait for each engine before giving up. 15 is fine.</td></tr>
-<tr><td><code>SEARCH_MCP_REQUEST_DELAY</code></td><td>Seconds to sleep between requests. Increase if engines start blocking you.</td></tr>
-<tr><td><code>SEARCH_MCP_CACHE_TTL_HOURS</code></td><td>How long fetched pages stay in the local cache. 168 = 7 days.</td></tr>
-<tr><td><code>SEARCH_MCP_CACHE_MAX_MB</code></td><td>Max disk space for the cache. Old items are deleted when it gets full.</td></tr>
-<tr><td><code>SEARCH_MCP_LOG_LEVEL</code></td><td><code>debug</code>, <code>info</code>, <code>warning</code>, or <code>error</code>. Use <code>debug</code> only when troubleshooting.</td></tr>
+<tr><td><code>Default search engines</code></td><td>Which engines are used when you (or the robot) just say &quot;search&quot; without picking one. Tick the checkboxes you want.</td></tr>
+<tr><td><code>Fetch strategy</code></td><td><code>http</code> = fast, no browser. <code>browser</code> = uses Playwright/Chromium (slow, heavy, needs install). <code>auto</code> = tries HTTP first, falls back to browser. On a free CPU box keep <code>http</code>.</td></tr>
+<tr><td><code>Enable rescue fallback</code><td>If <code>true</code>, when a search fails it tries other engines as backup. We keep it <code>false</code> because the default rescue engine (searx) is dead and mislabels results.</td></tr>
+<tr><td><code>Rescue engines</code></td><td>Engines used only when rescue is enabled. Tick the ones you want as backup.</td></tr>
+<tr><td><code>Max results per engine</code></td><td>How many results to ask each engine for. 10 is a good default. More = slower.</td></tr>
+<tr><td><code>HTTP timeout</code></td><td>Seconds to wait for each engine before giving up. 15 is fine.</td></tr>
+<tr><td><code>Request delay</code></td><td>Seconds to sleep between requests. Increase if engines start blocking you.</td></tr>
+<tr><td><code>Cache TTL</code></td><td>How long fetched pages stay in the local cache. 168 = 7 days.</td></tr>
+<tr><td><code>Cache max size</code></td><td>Max disk space for the cache. Old items are deleted when it gets full.</td></tr>
+<tr><td><code>Log level</code></td><td><code>debug</code>, <code>info</code>, <code>warning</code>, or <code>error</code>. Use <code>debug</code> only when troubleshooting.</td></tr>
 </table>
 
 <h2>Available engines</h2>
@@ -392,31 +506,25 @@ GUIDE_HTML = """\
 </ul>
 
 <h2>How to change which engines are used</h2>
-<p>Edit the <code>SEARCH_MCP_DEFAULT_ENGINES</code> field. It must be a JSON list.</p>
-<p>Example — only fast general engines:</p>
-<pre>["duckduckgo","mojeek","bing"]</pre>
-<p>Example — academic mode:</p>
-<pre>["arxiv","openalex","crossref","pubmed"]</pre>
-<p>Example — code mode:</p>
-<pre>["github","stackexchange","hackernews"]</pre>
-<p>After editing, click <strong>Save + Restart</strong>. Wait about 5 seconds, then test.</p>
+<p>Go to <strong>/admin</strong>, tick the engines you want under &quot;Default search engines&quot;, and click <strong>Save + Restart</strong>. Wait about 5 seconds, then test.</p>
 
 <h2>How to add an engine that is not in the default list</h2>
-<p>You don&#39;t &quot;add&quot; new engines to the code from this dashboard. The engine must already be supported by <code>free-search-mcp</code>. To use one that is not in the defaults, just put its name in the JSON list. For example, to enable <code>gdelt</code> even though it is slow:</p>
-<pre>["duckduckgo","mojeek","bing","gdelt"]</pre>
+<p>You don&#39;t &quot;add&quot; new engines to the code from this dashboard. The engine must already be supported by <code>free-search-mcp</code>. To use one that is not in the defaults, type its name in the &quot;Extra engines&quot; field under the engine picker. For example:</p>
+<pre>brave_api, google_cse</pre>
+<p>Then save + restart. Note: those engines need API keys set separately.</p>
 
 <h2>How to enable browser engines (advanced, heavy)</h2>
 <ol>
 <li>Install Chromium/Playwright on this PC.</li>
-<li>Set <code>SEARCH_MCP_FETCH_STRATEGY=browser</code>.</li>
-<li>Add the browser engine names to the default engines list.</li>
+<li>Set <code>Fetch strategy</code> to <code>browser</code>.</li>
+<li>Type the browser engine names into the &quot;Extra engines&quot; field (e.g. <code>google, brave</code>).</li>
 <li>Save + Restart.</li>
 </ol>
 
 <h2>How to test if the server works</h2>
 <pre>curl -X POST http://localhost:38472/gradio_api/mcp/ \\
   -H 'Content-Type: application/json' \\
-  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}'&lt;/pre&gt;
+  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}'</pre>
 <p>You should get a big JSON list of tools. If you do, the server is alive.</p>
 
 <h2>How to make the robot use it</h2>
@@ -428,8 +536,8 @@ GUIDE_HTML = """\
 <ul>
 <li><strong>Server not responding?</strong> Run <code>systemctl --user status web-search-mcp</code>.</li>
 <li><strong>Port conflict?</strong> Change <code>PORT</code> in admin, save + restart.</li>
-<li><strong>Bad JSON error on restart?</strong> Make sure <code>SEARCH_MCP_DEFAULT_ENGINES</code> and <code>SEARCH_MCP_RESCUE_ENGINES</code> look like <code>["engine1","engine2"]</code>, not <code>engine1,engine2</code>.</li>
-<li><strong>Slow searches?</strong> Reduce the number of engines or set <code>SEARCH_MCP_MAX_RESULTS=5</code>.</li>
+<li><strong>Bad JSON error on restart?</strong> Make sure no engine names have spaces or quotes. Use plain comma-separated names in the Extra engines box.</li>
+<li><strong>Slow searches?</strong> Untick slow engines like <code>gdelt</code> or reduce <code>Max results per engine</code>.</li>
 </ul>
 
 <div class="note">
