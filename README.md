@@ -5,8 +5,8 @@
 </p>
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
-[![MCP](https://img.shields.io/badge/MCP-2026--07--28-purple.svg)](https://modelcontextprotocol.io/specification/2026-07-28)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![MCP](https://img.shields.io/badge/MCP-v2%20streamable--http-purple.svg)](https://modelcontextprotocol.io/specification/2026-07-28)
 
 A **local-first, no-API-key** Model Context Protocol server that gives any
 LLM (Claude, GPT, local Ollama, …) the ability to search the web, fetch and
@@ -37,7 +37,150 @@ shakedown.
 
 ---
 
-## 🚀 One-click deploy
+## 🌍 Public Instance
+
+A free, public, keyless instance is hosted at:
+
+**https://search.ai-vibe.org**
+
+- **MCP endpoint:** `https://search.ai-vibe.org/gradio_api/mcp/`
+- **Landing page:** `https://search.ai-vibe.org/`
+- **Admin dashboard:** `https://search.ai-vibe.org/admin` (login required — first visit sets up credentials)
+- **Guide:** `https://search.ai-vibe.org/admin/guide` (login required)
+
+The MCP endpoint is **open to everyone** — no API key, no signup, no auth.
+Point your MCP client at it and you have 18 keyless search engines.
+
+The admin dashboard is protected by a built-in login system (first visit =
+setup page to create username + password; session cookies keep you logged
+in for 7 days; change password inside the dashboard).
+
+### Connect your agent to the public instance
+
+#### Hermes Agent
+
+```yaml
+# ~/.hermes/config.yaml
+mcp_servers:
+  web_search:
+    url: "https://search.ai-vibe.org/gradio_api/mcp/"
+```
+
+Restart Hermes. Tools appear as `mcp_web_search_search`, `mcp_web_search_research`, `mcp_web_search_fetch`, etc.
+
+Optional — disable the built-in `ddgs` search to avoid duplicate tools:
+
+```bash
+hermes tools disable web
+```
+
+#### Claude Desktop / Claude Code
+
+Add to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "websearch": {
+      "url": "https://search.ai-vibe.org/gradio_api/mcp/"
+    }
+  }
+}
+```
+
+#### Codex
+
+```bash
+codex mcp add websearch --transport http --url https://search.ai-vibe.org/gradio_api/mcp/
+```
+
+#### Any MCP v2 client (streamable-http)
+
+Point your client at:
+
+```
+https://search.ai-vibe.org/gradio_api/mcp/
+```
+
+#### Quick test
+
+```bash
+curl -X POST https://search.ai-vibe.org/gradio_api/mcp/ \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+### Self-host (local or your own server)
+
+The `hf-space/` directory contains a self-contained entry point that serves:
+
+- a Gradio landing page at `/` (keeps Hugging Face Spaces SDK happy)
+- the MCP v2 streamable-http endpoint at `/gradio_api/mcp/`
+- an admin dashboard at `/admin` (login-protected)
+- a guide page at `/admin/guide` (login-protected)
+
+```bash
+git clone https://github.com/artfix/web-search-mcp.git
+cd web-search-mcp
+
+# Run locally (defaults to port 38472)
+PORT=38472 uv run --with gradio --with mcp --with uvicorn --with fastapi python hf-space/app.py
+```
+
+Settings are saved to `hf-space/.env` and loaded on startup. The admin
+dashboard writes to this file and can restart the service via systemd.
+
+For auto-start at boot, a systemd user service is recommended:
+
+```ini
+# ~/.config/systemd/user/web-search-mcp.service
+[Unit]
+Description=Web Search MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/youruser/web-search-mcp
+ExecStart=/home/youruser/.local/bin/uv run --with gradio --with mcp --with uvicorn --with fastapi python hf-space/app.py
+Environment="PORT=38472"
+
+[Install]
+WantedBy=default.target
+```
+
+Put nginx in front for HTTPS (certbot for Let's Encrypt):
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name search.yourdomain.org;
+
+    ssl_certificate /etc/letsencrypt/live/search.yourdomain.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/search.yourdomain.org/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:38472;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_connect_timeout 3600;
+        proxy_send_timeout 3600;
+        proxy_read_timeout 3600;
+    }
+}
+```
+
+No nginx-level auth blocks needed — the app's built-in login protects `/admin`.
+
+---
+
+## 🚀 One-click deploy (stdio, for Claude Code / Codex)
 
 One command — the keyless engines work immediately, no signup, no key, no
 checkout (needs [uv](https://docs.astral.sh/uv/)):
@@ -130,7 +273,7 @@ stripping). Each fetched page also returns `author`, `published_date`, and
 `include_text`, `exclude_text`. `category` also **routes** the query to
 sources that natively index it — see [Vertical sources](#vertical-sources-selected-automatically-by-category).
 
-### Anti-detection &amp; resilience
+### Anti-detection & resilience
 
 - HTTP fast path uses [`curl_cffi`](https://github.com/lexiforest/curl_cffi)
   with a real Chrome 131 JA3/JA4 + HTTP/2 fingerprint, fixing the DDG
