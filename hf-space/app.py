@@ -6,27 +6,33 @@ Serves:
     happy);
   - the `free-search-mcp` MCP-over-HTTP server at `/gradio_api/mcp/`;
   - a local admin dashboard at `/admin` to edit settings and restart the
-    service;
-  - a plain-English guide at `/admin/guide`.
+    service (protected by login);
+  - a plain-English guide at `/admin/guide` (protected by login).
 
-Why Gradio + MCP v2? Gradio's built-in `mcp_server=True` requires `mcp`
-v1, but `free-search-mcp` requires `mcp` v2. So we use Gradio only for
-the landing page and run the upstream MCP server as a mounted ASGI app.
+Auth flow:
+  - First visit to /admin → redirect to /admin/setup (set username + password)
+  - Subsequent visits → redirect to /admin/login
+  - After login → session cookie (HMAC-signed, 7-day expiry)
+  - Inside dashboard → change password section
 
 To run locally:
   PORT=38472 uv run --with gradio --with mcp --with uvicorn --with fastapi python hf-space/app.py
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import gradio as gr
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 # Load local .env before importing the upstream server so settings can be
 # overridden from disk.
@@ -41,7 +47,6 @@ if ENV_FILE.exists():
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip()
-            # Strip only matching outer quotes; leave JSON arrays intact.
             if (value.startswith('"') and value.endswith('"')) or (
                 value.startswith("'") and value.endswith("'")
             ):
@@ -52,7 +57,6 @@ if ENV_FILE.exists():
 from search_mcp import server as search_server
 
 
-# Default policy for the public/free build. Override via the admin page.
 os.environ.setdefault("SEARCH_MCP_RESCUE_ENABLED", "false")
 os.environ.setdefault("SEARCH_MCP_RESCUE_ENGINES", "[]")
 os.environ.setdefault("SEARCH_MCP_FETCH_STRATEGY", "http")
@@ -66,18 +70,18 @@ key, no signup — point your MCP client at this URL and go.
 
 ## Connect
 
-**Endpoint:** `https://artfix-web-search-mcp.hf.space/gradio_api/mcp/`
+**Endpoint:** `https://search.ai-vibe.org/gradio_api/mcp/`
 
 | Client | How to connect |
 |---|---|
-| Hermes / generic MCP v2 | `https://artfix-web-search-mcp.hf.space/gradio_api/mcp/` |
-| Claude Desktop / Codex | `{"mcpServers":{"websearch":{"url":"https://artfix-web-search-mcp.hf.space/gradio_api/mcp/"}}}` |
-| Reachy Mini app | `reachy-mini-conversation-app tool-spaces add artfix/web-search-mcp` |
+| Hermes / generic MCP v2 | `https://search.ai-vibe.org/gradio_api/mcp/` |
+| Claude Desktop / Codex | `{"mcpServers":{"websearch":{"url":"https://search.ai-vibe.org/gradio_api/mcp/"}}}` |
+| Reachy Mini app | `reachy-mini-conversation-app tool-spaces add search.ai-vibe.org` |
 
 **Local network** (if this server is running on your LAN): use
 `http://<this-pc-ip>:38472/gradio_api/mcp/`.
 
-**Admin:** [`/admin`](/admin) — edit settings, restart, read the guide.
+**Admin:** [`/admin`](/admin) — edit settings, restart, read the guide. Login required.
 
 **Note:** this server speaks **MCP protocol v2** (streamable-http,
 revision 2026-07-28). Clients that only support MCP v1 (older Gradio
@@ -111,15 +115,14 @@ Browser-rendered engines (`startpage`, `brave`, `google`, `baidu`,
 ## Quick test
 
 ```bash
-curl -X POST https://artfix-web-search-mcp.hf.space/gradio_api/mcp/ \\
+curl -X POST https://search.ai-vibe.org/gradio_api/mcp/ \\
   -H 'Content-Type: application/json' \\
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 ## Limits
 
-- Free-tier CPU Space: 2 vCPU, 16 GB RAM.
-- No auth on the endpoint.
+- No auth on the MCP endpoint — anyone can search.
 - 7-day page cache, 256 MB cache cap.
 - `gdelt` is slow (12–15s) and sometimes returns zero results.
 
@@ -132,8 +135,6 @@ mcp_app = search_server.mcp.streamable_http_app()
 
 
 async def _mcp_mount(scope, receive, send) -> None:
-    """ASGI mount target: rewrite the stripped path back to `/mcp` and call
-    the upstream MCP server."""
     rewritten_scope = dict(scope)
     rewritten_scope["path"] = "/mcp"
     rewritten_scope["raw_path"] = b"/mcp"
@@ -142,7 +143,6 @@ async def _mcp_mount(scope, receive, send) -> None:
 
 @asynccontextmanager
 async def lifespan(app):
-    """Run the upstream MCP server's lifespan (starts the session manager)."""
     async with mcp_app.router.lifespan_context(app):
         yield
 
@@ -152,51 +152,90 @@ with gr.Blocks(title="Web Search MCP", analytics_enabled=False) as demo:
 
 
 # ---------------------------------------------------------------------------
-# Admin dashboard — only useful when running locally; harmless on HF.
+# Auth system
 # ---------------------------------------------------------------------------
 
-# Engines available without API keys or browsers.
+AUTH_FILE = HERE / ".auth.json"
+SESSION_COOKIE = "wsmcp_session"
+SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
+
+
+def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    if salt is None:
+        salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
+    return key.hex(), salt
+
+
+def _verify_password(password: str, stored_hash: str, salt: str) -> bool:
+    key, _ = _hash_password(password, salt)
+    return hmac.compare_digest(key, stored_hash)
+
+
+def _load_auth() -> dict | None:
+    if AUTH_FILE.exists():
+        try:
+            return json.loads(AUTH_FILE.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _save_auth(data: dict) -> None:
+    AUTH_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _create_session_token(username: str, secret: str) -> str:
+    ts = str(int(time.time()))
+    msg = f"{username}:{ts}"
+    sig = hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return f"{msg}:{sig}"
+
+
+def _verify_session_token(token: str, secret: str) -> bool:
+    parts = token.split(":")
+    if len(parts) != 3:
+        return False
+    username, ts_str, sig = parts
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        return False
+    if time.time() - ts > SESSION_MAX_AGE:
+        return False
+    expected = hmac.new(secret.encode(), f"{username}:{ts_str}".encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
+
+
+def _get_session_user(request: Request) -> str | None:
+    auth = _load_auth()
+    if not auth:
+        return None
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    if _verify_session_token(token, auth.get("secret", "")):
+        return auth.get("username")
+    return None
+
+
+def _needs_setup() -> bool:
+    return _load_auth() is None
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard data
+# ---------------------------------------------------------------------------
+
 KEYLESS_ENGINES = [
-    "duckduckgo",
-    "mojeek",
-    "bing",
-    "googlenews",
-    "anysearch",
-    "arxiv",
-    "openalex",
-    "crossref",
-    "pubmed",
-    "github",
-    "stackexchange",
-    "hackernews",
-    "wikipedia",
-    "openlibrary",
-    "openverse",
-    "zenodo",
-    "bilibili",
-    "sogou",
-    "so360",
-    "gdelt",
+    "duckduckgo", "mojeek", "bing", "googlenews", "anysearch",
+    "arxiv", "openalex", "crossref", "pubmed", "github",
+    "stackexchange", "hackernews", "wikipedia", "openlibrary",
+    "openverse", "zenodo", "bilibili", "sogou", "so360", "gdelt",
 ]
 
-# Engines that need Playwright/Chromium.
-BROWSER_ENGINES = [
-    "google",
-    "startpage",
-    "brave",
-    "baidu",
-    "zhihu",
-]
-
-# Engines that need an API key (set via extra env vars, not shown here).
-API_KEY_ENGINES = [
-    "brave_api",
-    "serper",
-    "tavily",
-    "google_cse",
-    "github_code",
-]
-
+BROWSER_ENGINES = ["google", "startpage", "brave", "baidu", "zhihu"]
+API_KEY_ENGINES = ["brave_api", "serper", "tavily", "google_cse", "github_code"]
 
 ADMIN_SETTINGS = [
     ("PORT", "Server port", "38472", "number"),
@@ -224,7 +263,6 @@ def _read_env() -> dict[str, str]:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
-                # Strip only matching outer quotes; leave JSON arrays intact.
                 if (value.startswith('"') and value.endswith('"')) or (
                     value.startswith("'") and value.endswith("'")
                 ):
@@ -264,23 +302,13 @@ def _parse_engines(raw: str) -> list[str]:
     return [e.strip() for e in raw.split(",") if e.strip()]
 
 
-def _render_engines_checkbox(name: str, selected: list[str], options: list[str]) -> str:
-    html = f'<fieldset class="engine-fieldset"><legend>{name}</legend><div class="engine-grid">\n'
-    for engine in options:
-        checked = "checked" if engine in selected else ""
-        html += (
-            f'<label class="engine-chip">\n'
-            f'  <input type="checkbox" name="{name}" value="{engine}" {checked}>\n'
-            f'  <span>{engine}</span>\n'
-            f'</label>\n'
-        )
-    html += "</div></fieldset>\n"
-    return html
-
+# ---------------------------------------------------------------------------
+# CSS (shared across all pages)
+# ---------------------------------------------------------------------------
 
 SHARED_CSS = """\
 html, body {{ margin:0 !important; padding:0 !important; }}
-body.mcp-admin, body.mcp-guide {{
+body.mcp-admin, body.mcp-guide, body.mcp-auth {{
   display:flex !important;
   justify-content:center !important;
   min-height:100vh;
@@ -476,7 +504,181 @@ body.mcp-admin, body.mcp-guide {{
 .mcp-engine-item span {{
   color:#94a3b8; font-size:.9rem;
 }}
+
+/* Auth pages */
+.mcp-auth-page {{
+  width:100% !important; max-width:420px !important;
+  margin:0 auto !important; padding:2rem 1.5rem !important;
+  box-sizing:border-box !important;
+  display:flex; flex-direction:column; justify-content:center; min-height:100vh;
+}}
+.mcp-auth-card {{
+  background:#151e32; border:1px solid #27364b; border-radius:1rem;
+  padding:2rem; box-shadow:0 8px 32px rgba(0,0,0,.35);
+}}
+.mcp-auth-card h1 {{
+  margin:0 0 .5rem; font-size:1.6rem; color:#38bdf8; text-align:center;
+}}
+.mcp-auth-card p {{
+  margin:.5rem 0 1.5rem; color:#94a3b8; text-align:center; font-size:.95rem;
+}}
+.mcp-auth-form {{ display:flex; flex-direction:column; gap:1rem; }}
+.mcp-auth-form .mcp-form-group {{ margin-bottom:0; }}
+.mcp-auth-footer {{
+  margin-top:1.5rem; text-align:center;
+}}
+.mcp-auth-footer a {{
+  color:#64748b; font-size:.85rem; text-decoration:none;
+}}
+.mcp-auth-footer a:hover {{ color:#38bdf8; }}
 """
+
+
+# ---------------------------------------------------------------------------
+# Auth pages (login + first-time setup)
+# ---------------------------------------------------------------------------
+
+LOGIN_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Web Search MCP — Login</title>
+<style>{css}</style>
+</head>
+<body class="mcp-auth">
+<div class="mcp-auth-page">
+  <div class="mcp-auth-card">
+    <h1>🔧 Admin Login</h1>
+    <p>Enter your credentials to access the dashboard.</p>
+    {message}
+    <form method="post" action="/admin/login" class="mcp-auth-form">
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="username">Username</label>
+        <input class="mcp-input" type="text" id="username" name="username" required autofocus>
+      </div>
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="password">Password</label>
+        <input class="mcp-input" type="password" id="password" name="password" required>
+      </div>
+      <button type="submit" class="mcp-btn" style="width:100%; justify-content:center; margin-top:.5rem;">Login</button>
+    </form>
+    <div class="mcp-auth-footer">
+      <a href="/">← Back to landing page</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+"""
+
+
+SETUP_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Web Search MCP — Setup</title>
+<style>{css}</style>
+</head>
+<body class="mcp-auth">
+<div class="mcp-auth-page">
+  <div class="mcp-auth-card">
+    <h1>🔐 First Time Setup</h1>
+    <p>Create your admin username and password. You can change the password later from the dashboard.</p>
+    {message}
+    <form method="post" action="/admin/setup" class="mcp-auth-form">
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="username">Admin username</label>
+        <input class="mcp-input" type="text" id="username" name="username" required autofocus>
+      </div>
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="password">Password</label>
+        <input class="mcp-input" type="password" id="password" name="password" required minlength="6">
+        <p class="mcp-help">At least 6 characters.</p>
+      </div>
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="password2">Confirm password</label>
+        <input class="mcp-input" type="password" id="password2" name="password2" required minlength="6">
+      </div>
+      <button type="submit" class="mcp-btn" style="width:100%; justify-content:center; margin-top:.5rem;">Create Admin Account</button>
+    </form>
+    <div class="mcp-auth-footer">
+      <a href="/">← Back to landing page</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+"""
+
+
+async def login_page(request: Request) -> HTMLResponse:
+    if _needs_setup():
+        return RedirectResponse(url="/admin/setup", status_code=302)
+    return HTMLResponse(content=LOGIN_HTML.format(css=SHARED_CSS, message=""))
+
+
+async def login_verify(request: Request) -> HTMLResponse:
+    if _needs_setup():
+        return RedirectResponse(url="/admin/setup", status_code=302)
+    form = await request.form()
+    username = form.get("username") or ""
+    password = form.get("password") or ""
+    auth = _load_auth()
+    if auth and username == auth.get("username") and _verify_password(password, auth["hash"], auth["salt"]):
+        token = _create_session_token(username, auth["secret"])
+        resp = RedirectResponse(url="/admin", status_code=302)
+        resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax")
+        return resp
+    msg = '<div class="mcp-status error">Wrong username or password.</div>'
+    return HTMLResponse(content=LOGIN_HTML.format(css=SHARED_CSS, message=msg))
+
+
+async def setup_page(request: Request) -> HTMLResponse:
+    if not _needs_setup():
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(content=SETUP_HTML.format(css=SHARED_CSS, message=""))
+
+
+async def setup_verify(request: Request) -> HTMLResponse:
+    if not _needs_setup():
+        return RedirectResponse(url="/admin/login", status_code=302)
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    password = form.get("password") or ""
+    password2 = form.get("password2") or ""
+    if not username or len(username) < 2:
+        msg = '<div class="mcp-status error">Username must be at least 2 characters.</div>'
+        return HTMLResponse(content=SETUP_HTML.format(css=SHARED_CSS, message=msg))
+    if len(password) < 6:
+        msg = '<div class="mcp-status error">Password must be at least 6 characters.</div>'
+        return HTMLResponse(content=SETUP_HTML.format(css=SHARED_CSS, message=msg))
+    if password != password2:
+        msg = '<div class="mcp-status error">Passwords do not match.</div>'
+        return HTMLResponse(content=SETUP_HTML.format(css=SHARED_CSS, message=msg))
+    hashed, salt = _hash_password(password)
+    secret = secrets.token_hex(32)
+    _save_auth({"username": username, "hash": hashed, "salt": salt, "secret": secret})
+    token = _create_session_token(username, secret)
+    resp = RedirectResponse(url="/admin", status_code=302)
+    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE, httponly=True, samesite="lax")
+    return resp
+
+
+async def logout(request: Request) -> HTMLResponse:
+    resp = RedirectResponse(url="/admin/login", status_code=302)
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard
+# ---------------------------------------------------------------------------
 
 ADMIN_HTML = """\
 <!doctype html>
@@ -486,16 +688,14 @@ ADMIN_HTML = """\
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>Web Search MCP — Admin</title>
-<style>
-{css}
-</style>
+<style>{css}</style>
 </head>
 <body class="mcp-admin">
 <div class="mcp-page">
   <div class="mcp-header">
     <div>
       <h1>🔧 Web Search MCP Admin</h1>
-      <p>Change settings and click Save + Restart. The service will reload with the new values.</p>
+      <p>Logged in as <strong>{username}</strong> · <a href="/admin/logout" style="color:#94a3b8;">Logout</a></p>
     </div>
     <a href="/admin/guide" class="mcp-btn mcp-btn-secondary">📖 Guide</a>
   </div>
@@ -605,8 +805,31 @@ ADMIN_HTML = """\
     {status}
   </form>
   
+  <div class="mcp-card">
+    <h2>🔐 Change password</h2>
+    <form method="post" action="/admin/change-password" class="mcp-form-grid" style="max-width:600px;">
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="current_password">Current password</label>
+        <input class="mcp-input" type="password" id="current_password" name="current_password" required>
+      </div>
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="new_password">New password</label>
+        <input class="mcp-input" type="password" id="new_password" name="new_password" required minlength="6">
+        <p class="mcp-help">At least 6 characters.</p>
+      </div>
+      <div class="mcp-form-group">
+        <label class="mcp-label" for="new_password2">Confirm new password</label>
+        <input class="mcp-input" type="password" id="new_password2" name="new_password2" required minlength="6">
+      </div>
+      <div class="mcp-form-group" style="display:flex; align-items:flex-end;">
+        <button type="submit" class="mcp-btn">Change Password</button>
+      </div>
+    </form>
+    {pw_status}
+  </div>
+  
   <div class="mcp-note">
-    <strong>Files used:</strong> settings in <span class="mcp-code">{env_file}</span> · restart via <span class="mcp-code">systemctl --user restart web-search-mcp</span> · guide at <span class="mcp-code">/admin/guide</span>
+    <strong>Files used:</strong> settings in <span class="mcp-code">{env_file}</span> · credentials in <span class="mcp-code">{auth_file}</span> · restart via <span class="mcp-code">systemctl --user restart web-search-mcp</span> · guide at <span class="mcp-code">/admin/guide</span>
   </div>
 </div>
 </body>
@@ -614,7 +837,7 @@ ADMIN_HTML = """\
 """
 
 
-def _admin_form(message: str = "", error: bool = False) -> HTMLResponse:
+def _admin_form(message: str = "", error: bool = False, pw_message: str = "", pw_error: bool = False, username: str = "admin") -> HTMLResponse:
     values = _current_values()
 
     def opts(key: str, choices: str) -> str:
@@ -642,8 +865,13 @@ def _admin_form(message: str = "", error: bool = False) -> HTMLResponse:
     if message:
         status_html = f'<div class="mcp-status{" error" if error else ""}">{message}</div>\n'
 
+    pw_status_html = ""
+    if pw_message:
+        pw_status_html = f'<div class="mcp-status{" error" if pw_error else ""}" style="margin-top:1rem;">{pw_message}</div>\n'
+
     content = ADMIN_HTML.format(
         css=SHARED_CSS,
+        username=username,
         PORT=values.get("PORT", "38472"),
         SEARCH_MCP_MAX_RESULTS=values.get("SEARCH_MCP_MAX_RESULTS", "10"),
         SEARCH_MCP_HTTP_TIMEOUT=values.get("SEARCH_MCP_HTTP_TIMEOUT", "15"),
@@ -658,16 +886,29 @@ def _admin_form(message: str = "", error: bool = False) -> HTMLResponse:
         rescue_engines_checkboxes=chips("SEARCH_MCP_RESCUE_ENGINES", KEYLESS_ENGINES),
         rescue_engines_extra=extras("SEARCH_MCP_RESCUE_ENGINES"),
         status=status_html,
+        pw_status=pw_status_html,
         env_file=str(ENV_FILE),
+        auth_file=str(AUTH_FILE),
     )
     return HTMLResponse(content=content)
 
 
 async def admin_page(request: Request) -> HTMLResponse:
-    return _admin_form()
+    if _needs_setup():
+        return RedirectResponse(url="/admin/setup", status_code=302)
+    user = _get_session_user(request)
+    if not user:
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return _admin_form(username=user)
 
 
 async def admin_save(request: Request) -> HTMLResponse:
+    if _needs_setup():
+        return RedirectResponse(url="/admin/setup", status_code=302)
+    user = _get_session_user(request)
+    if not user:
+        return RedirectResponse(url="/admin/login", status_code=302)
+
     form = await request.form()
     new_values: dict[str, str] = {}
 
@@ -704,8 +945,42 @@ async def admin_save(request: Request) -> HTMLResponse:
     except Exception as exc:
         error = True
         message += f" Restart failed: {exc}"
-    return _admin_form(message=message, error=error)
+    return _admin_form(message=message, error=error, username=user)
 
+
+async def admin_change_password(request: Request) -> HTMLResponse:
+    if _needs_setup():
+        return RedirectResponse(url="/admin/setup", status_code=302)
+    user = _get_session_user(request)
+    if not user:
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    form = await request.form()
+    current_pw = form.get("current_password") or ""
+    new_pw = form.get("new_password") or ""
+    new_pw2 = form.get("new_password2") or ""
+
+    auth = _load_auth()
+    if not auth:
+        return RedirectResponse(url="/admin/setup", status_code=302)
+
+    if not _verify_password(current_pw, auth["hash"], auth["salt"]):
+        return _admin_form(pw_message="Current password is wrong.", pw_error=True, username=user)
+    if len(new_pw) < 6:
+        return _admin_form(pw_message="New password must be at least 6 characters.", pw_error=True, username=user)
+    if new_pw != new_pw2:
+        return _admin_form(pw_message="New passwords do not match.", pw_error=True, username=user)
+
+    hashed, salt = _hash_password(new_pw)
+    auth["hash"] = hashed
+    auth["salt"] = salt
+    _save_auth(auth)
+    return _admin_form(pw_message="Password changed successfully.", username=user)
+
+
+# ---------------------------------------------------------------------------
+# Guide page
+# ---------------------------------------------------------------------------
 
 GUIDE_HTML = """\
 <!doctype html>
@@ -715,9 +990,7 @@ GUIDE_HTML = """\
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>Web Search MCP — Guide</title>
-<style>
-{css}
-</style>
+<style>{css}</style>
 </head>
 <body class="mcp-guide">
 <div class="mcp-page">
@@ -753,9 +1026,9 @@ GUIDE_HTML = """\
   <div class="mcp-card">
     <table class="mcp-table">
       <tr><th>Page</th><th>URL</th></tr>
-      <tr><td><strong>Landing page</strong></td><td><span class="mcp-code">http://&lt;this-pc-ip&gt;:38472/</span></td></tr>
-      <tr><td><strong>Admin settings</strong></td><td><span class="mcp-code">http://&lt;this-pc-ip&gt;:38472/admin</span></td></tr>
-      <tr><td><strong>MCP endpoint (robot/app)</strong></td><td><span class="mcp-code">http://&lt;this-pc-ip&gt;:38472/gradio_api/mcp/</span></td></tr>
+      <tr><td><strong>Landing page</strong></td><td><span class="mcp-code">https://search.ai-vibe.org/</span></td></tr>
+      <tr><td><strong>Admin settings</strong></td><td><span class="mcp-code">https://search.ai-vibe.org/admin</span></td></tr>
+      <tr><td><strong>MCP endpoint (robot/app)</strong></td><td><span class="mcp-code">https://search.ai-vibe.org/gradio_api/mcp/</span></td></tr>
     </table>
   </div>
   
@@ -817,7 +1090,7 @@ GUIDE_HTML = """\
   
   <div class="mcp-section-title" id="howto"><span class="mcp-icon">✏️</span> How to change engines</div>
   <div class="mcp-card">
-    <div class="mcp-step"><div class="mcp-step-num">1</div><div>Go to <a href="/admin">/admin</a>.</div></div>
+    <div class="mcp-step"><div class="mcp-step-num">1</div><div>Go to <a href="/admin">/admin</a> and log in.</div></div>
     <div class="mcp-step"><div class="mcp-step-num">2</div><div>Under <strong>Default search engines</strong>, tick the engines you want.</div></div>
     <div class="mcp-step"><div class="mcp-step-num">3</div><div>Click <strong>Save + Restart</strong>.</div></div>
     <div class="mcp-step"><div class="mcp-step-num">4</div><div>Wait about 5 seconds, then test with the curl command below.</div></div>
@@ -853,8 +1126,10 @@ GUIDE_HTML = """\
   <div class="mcp-card">
     <p>The robot (or Hermes) needs the MCP URL. On your local network the URL is:</p>
     <pre class="mcp-pre">http://192.168.1.3:38472/gradio_api/mcp/</pre>
-    <div class="mcp-warning">
-      For a public URL you would need to host this on a public server or tunnel. The Hugging Face Space attempt failed because HF forces an old MCP v1 dependency that conflicts with this app.
+    <p>Or from the internet:</p>
+    <pre class="mcp-pre">https://search.ai-vibe.org/gradio_api/mcp/</pre>
+    <div class="mcp-tip">
+      The MCP endpoint is public — no login needed. Only the admin dashboard requires login.
     </div>
   </div>
   
@@ -865,6 +1140,7 @@ GUIDE_HTML = """\
       <li><strong>Port conflict?</strong> Change <strong>Server port</strong> in admin, save + restart.</li>
       <li><strong>Bad JSON error on restart?</strong> Make sure engine names in the Extra engines box have no spaces or quotes. Use plain commas.</li>
       <li><strong>Slow searches?</strong> Untick slow engines like <span class="mcp-code">gdelt</span> or reduce <strong>Max results per engine</strong>.</li>
+      <li><strong>Forgot admin password?</strong> Delete <span class="mcp-code">.auth.json</span> in the hf-space directory and restart the service to set a new one.</li>
     </ul>
   </div>
   
@@ -878,16 +1154,33 @@ GUIDE_HTML = """\
 
 
 async def admin_guide(request: Request) -> HTMLResponse:
+    if _needs_setup():
+        return RedirectResponse(url="/admin/setup", status_code=302)
+    user = _get_session_user(request)
+    if not user:
+        return RedirectResponse(url="/admin/login", status_code=302)
     return HTMLResponse(content=GUIDE_HTML.format(css=SHARED_CSS))
 
 
-# Build a parent FastAPI app, mount the MCP endpoint, the admin endpoints,
-# then mount the Gradio UI at root.
+# ---------------------------------------------------------------------------
+# App wiring
+# ---------------------------------------------------------------------------
+
 parent = FastAPI(title="Web Search MCP", docs_url=None, redoc_url=None, lifespan=lifespan)
 parent.mount("/mcp", _mcp_mount)
 parent.mount("/gradio_api/mcp", _mcp_mount)
+
+# Auth routes (public)
+parent.get("/admin/login")(login_page)
+parent.post("/admin/login")(login_verify)
+parent.get("/admin/setup")(setup_page)
+parent.post("/admin/setup")(setup_verify)
+parent.get("/admin/logout")(logout)
+
+# Protected routes
 parent.get("/admin")(admin_page)
 parent.post("/admin/save")(admin_save)
+parent.post("/admin/change-password")(admin_change_password)
 parent.get("/admin/guide")(admin_guide)
 
 app = gr.mount_gradio_app(app=parent, blocks=demo, path="/")
